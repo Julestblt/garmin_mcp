@@ -73,6 +73,7 @@ class ConnectionRepository:
         for phase in ('activities', 'recovery', 'fitness'):
             rows = self.database.request('GET', 'sync_jobs', params={
                 'connection_id': f"eq.{connection['id']}", 'phase': f'eq.{phase}',
+                'mode': 'eq.historical',
                 'select': 'id,state,phase,cursor_date,oldest_synchronized_date,activity_count,last_error_code,last_success_at,updated_at',
                 'order': 'created_at.desc', 'limit': '1'})
             if rows:
@@ -101,7 +102,13 @@ class ConnectionRepository:
                           'partial' if categories['activities'].get('activity_count', 0) > 0 else
                           'pending')
         categories['patterns'] = {'state': patterns_state}
+        recent = self.database.request('GET', 'sync_jobs', params={
+            'connection_id': f"eq.{connection['id']}", 'mode': 'eq.incremental',
+            'select': 'state,phase,last_error_code,last_success_at,updated_at',
+            'order': 'created_at.desc', 'limit': '1'})
         return {'connection_id': connection['id'], 'categories': categories,
+                'last_sync_at': connection.get('last_sync_at'),
+                'incremental': recent[0] if recent else None,
                 'updated_at': max((row['updated_at'] for row in latest.values()),
                                   default=None)}
 

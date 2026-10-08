@@ -243,7 +243,12 @@ def main() -> None:
     components = create_stride_components()
     worker = ActivitySyncWorker(components.database, components.sessions)
     next_cleanup = 0.0
+    next_incremental_schedule = 0.0
     while True:
+        if time.monotonic() >= next_incremental_schedule:
+            scheduled = components.database.request('POST', 'rpc/schedule_incremental_sync', data={})
+            logger.info('incremental_jobs_scheduled', extra={'job_count': scheduled})
+            next_incremental_schedule = time.monotonic() + 3600
         if time.monotonic() >= next_cleanup:
             components.database.request('DELETE', 'auth_challenges', params={
                 'expires_at': f'lt.{datetime.now(timezone.utc).isoformat()}'})

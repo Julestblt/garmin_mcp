@@ -40,6 +40,7 @@ class FakeDatabase:
 class FakeSessions:
     def __init__(self):
         self.users = []
+        self.distance = 1000
 
     def for_user(self, user_id):
         self.users.append(user_id)
@@ -47,7 +48,7 @@ class FakeSessions:
 
     def get_activities_by_date(self, _start, _end):
         return [{'activityId': 123, 'activityType': {'typeKey': 'running'},
-                 'distance': 1000, 'duration': 300,
+                 'distance': self.distance, 'duration': 300,
                  'startTimeGMT': '2026-01-01 10:00:00'}]
 
     def get_activity(self, _activity_id):
@@ -97,6 +98,24 @@ def test_replayed_window_does_not_inflate_activity_count():
     assert worker.run_once()
     assert job['activity_count'] == 1
     assert len(database.activities) == 1
+
+
+def test_incremental_sync_updates_provider_corrections_without_duplicates():
+    user_id = uuid.uuid4()
+    job = {'id': str(uuid.uuid4()), 'connection_id': str(uuid.uuid4()),
+           'user_id': str(user_id), 'state': 'queued', 'mode': 'incremental',
+           'cursor_date': '2026-01-07', 'oldest_date': '2026-01-01',
+           'activity_count': 0, 'attempts': 0, 'failure_count': 0}
+    database = FakeDatabase(job)
+    sessions = FakeSessions()
+    worker = ActivitySyncWorker(database, sessions)
+    assert worker.run_once()
+    sessions.distance = 1200
+    job.update(state='queued', cursor_date='2026-01-07')
+    assert worker.run_once()
+    assert len(database.activities) == 1
+    assert next(iter(database.activities.values()))['distance_meters'] == 1200
+    assert job['activity_count'] == 1
 
 
 def test_normalization_requires_stable_provider_id():

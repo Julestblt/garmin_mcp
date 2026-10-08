@@ -24,6 +24,9 @@ def test_category_states_reflect_persisted_jobs():
                 raise AssertionError(params)
             if path == 'sync_jobs':
                 assert params['connection_id'] == f'eq.{connection_id}'
+                if params['mode'] == 'eq.incremental':
+                    return []
+                assert params['mode'] == 'eq.historical'
                 phase = params['phase'][3:]
                 return [dict(jobs[phase], phase=phase, last_success_at=None,
                              last_error_code=None, updated_at='2024-01-15T00:00:00Z')]
