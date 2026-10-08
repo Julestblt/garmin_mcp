@@ -140,3 +140,27 @@ def test_login_error_mapping(service, outcome, code):
     with pytest.raises(ConnectionError) as captured:
         service.start(uuid.uuid4(), 'a@example.com', 'password')
     assert captured.value.code == code
+
+
+def test_missing_session_marks_connection_for_reconnect(tmp_path):
+    user_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+
+    class Connections:
+        status = 'connected'
+
+        def get(self, requested_user):
+            assert requested_user == user_id
+            return {'id': str(connection_id), 'status': self.status}
+
+        def set_status_if_connection(self, requested_connection, status, error_code=None):
+            assert requested_connection == connection_id
+            assert error_code == 'session_expired'
+            self.status = status
+
+    connections = Connections()
+    sessions = GarminSessionProvider(FileTokenStore(tmp_path),
+                                     client_factory=FakeGarmin, connections=connections)
+    with pytest.raises(ConnectionError, match='reconnect_required'):
+        sessions.for_user(user_id)
+    assert connections.status == 'reconnect_required'

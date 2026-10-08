@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, NoReturn, Protocol
 
 import requests
 from garminconnect import (Garmin, GarminConnectAuthenticationError,
@@ -28,6 +28,8 @@ def map_error(error: Exception) -> ConnectionError:
 
 class ConnectionReader(Protocol):
     def get(self, user_id: uuid.UUID) -> dict[str, Any]: ...
+    def set_status_if_connection(self, connection_id: uuid.UUID, status: str,
+                                 error_code: str | None = None) -> None: ...
 
 
 def capture_mfa(client: Garmin) -> dict[str, Any]:
@@ -83,13 +85,19 @@ class GarminSessionProvider:
         self.client_factory = client_factory
         self.connections = connections
 
+    def _reconnect_required(self, connection: dict[str, Any] | None) -> NoReturn:
+        if connection and self.connections:
+            self.connections.set_status_if_connection(uuid.UUID(connection['id']),
+                                                      'reconnect_required', 'session_expired')
+        raise ConnectionError('reconnect_required', 409)
+
     def for_user(self, user_id: uuid.UUID) -> Garmin:
         connection = self.connections.get(user_id) if self.connections else None
         if connection and connection['status'] != 'connected':
             raise ConnectionError('reconnect_required', 409)
         token = self.tokens.load(user_id)
         if token is None:
-            raise ConnectionError('reconnect_required', 409)
+            self._reconnect_required(connection)
         client = self.client_factory()
         if connection:
             client._stride_connection_id = uuid.UUID(connection['id'])
@@ -98,7 +106,7 @@ class GarminSessionProvider:
             internal = client.client
             internal.loads(token)
         except (GarminConnectAuthenticationError, GarminConnectConnectionError):
-            raise ConnectionError('reconnect_required', 409) from None
+            self._reconnect_required(connection)
         try:
             if internal.di_refresh_token and internal._token_expires_soon():
                 internal._refresh_session()
@@ -109,7 +117,7 @@ class GarminSessionProvider:
             client.unit_system = settings.get('userData', {}).get('measurementSystem')
         except Exception as error:
             if isinstance(error, GarminConnectAuthenticationError):
-                raise ConnectionError('reconnect_required', 409) from None
+                self._reconnect_required(connection)
             raise map_error(error) from None
         self.persist(user_id, client)
         return client
