@@ -114,12 +114,17 @@ def register_routes(app: Any, components: StrideComponents) -> None:
         email, password = body['email'], body['password']
         if not 3 <= len(email) <= 320 or '@' not in email or not 1 <= len(password) <= 1024:
             return _error('invalid_request', 400)
+        history_start_date = body.get('history_start_date',
+                                      os.getenv('STRIDE_HISTORY_START_DATE', '2000-01-01'))
+        if not isinstance(history_start_date, str) or len(history_start_date) != 10:
+            return _error('invalid_request', 400)
         try:
             allowed = await anyio.to_thread.run_sync(lambda: components.database.request(
                 'POST', 'rpc/allow_auth_attempt', data={'p_user_id': str(user_id)}))
             if not allowed:
                 return _error('rate_limited', 429)
-            result = await anyio.to_thread.run_sync(components.service.start, user_id, email, password)
+            result = await anyio.to_thread.run_sync(components.service.start, user_id, email,
+                                                    password, history_start_date)
             logger.info('connection_start_completed', extra={'request_id': request_id,
                         'user_id': str(user_id), 'status': result['status']})
             return _json(result)
@@ -173,6 +178,22 @@ def register_routes(app: Any, components: StrideComponents) -> None:
             return Response(status_code=204)
         except Exception:
             logger.exception('disconnect_failed', extra={'request_id': request_id, 'user_id': str(user_id)})
+            return _error('storage_unavailable', 503)
+
+    @app.custom_route('/v1/connections/garmin/data', methods=['DELETE'])
+    async def delete_data(request: Request) -> Response:
+        user_id = _identity()
+        request_id = _request_id(request)
+        if user_id is None:
+            return _error('unauthorized', 401)
+        try:
+            await anyio.to_thread.run_sync(components.service.delete_data, user_id)
+            logger.info('garmin_data_deleted', extra={'request_id': request_id,
+                        'user_id': str(user_id)})
+            return Response(status_code=204)
+        except Exception:
+            logger.exception('garmin_data_deletion_failed', extra={'request_id': request_id,
+                             'user_id': str(user_id)})
             return _error('storage_unavailable', 503)
 
     @app.custom_route('/v1/connections/garmin/sync', methods=['GET'])

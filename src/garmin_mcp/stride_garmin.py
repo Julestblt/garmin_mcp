@@ -91,6 +91,15 @@ class _WidgetResponse:
     text: str
 
 
+@dataclass(frozen=True)
+class AuthenticationResult:
+    status: str
+    token_data: str | None = None
+    challenge_id: uuid.UUID | None = None
+    expected_connection_id: uuid.UUID | None = None
+    history_start_date: str | None = None
+
+
 class GarminSessionProvider:
     def __init__(self, tokens: TokenStore, client_factory: Callable[..., Garmin] = Garmin,
                  connections: ConnectionReader | None = None):
@@ -223,38 +232,57 @@ class GarminConnectionService:
 
     def start(self, user_id: uuid.UUID, email: str, password: str,
               connection_id: uuid.UUID | None = None) -> dict[str, str]:
+        result = self.authenticate(user_id, email, password, connection_id)
+        if result.token_data is not None:
+            self.sessions.tokens.save(user_id, result.token_data)
+        return self._public_result(result)
+
+    @staticmethod
+    def _public_result(result: AuthenticationResult) -> dict[str, str]:
+        response = {'status': result.status}
+        if result.challenge_id is not None:
+            response['challenge_id'] = str(result.challenge_id)
+        return response
+
+    def authenticate(self, user_id: uuid.UUID, email: str, password: str,
+                     expected_connection_id: uuid.UUID | None = None,
+                     history_start_date: str | None = None) -> AuthenticationResult:
         client = self.client_factory(email=email, password=password, return_on_mfa=True)
-        if connection_id:
-            client._stride_connection_id = connection_id
         try:
             status, _ = client.login()
             if status == 'needs_mfa':
                 state = capture_mfa(client)
-                if connection_id:
-                    state['connection_id'] = str(connection_id)
+                state['expected_connection_id'] = (str(expected_connection_id)
+                                                   if expected_connection_id else None)
+                state['history_start_date'] = history_start_date
                 challenge_id = self.challenges.create(user_id, state)
-                return {'status': 'mfa_required', 'challenge_id': str(challenge_id)}
-            self.sessions.persist(user_id, client)
-            return {'status': 'connected'}
+                return AuthenticationResult('mfa_required', challenge_id=challenge_id)
+            return AuthenticationResult('connected', client.client.dumps(),
+                                        expected_connection_id=expected_connection_id,
+                                        history_start_date=history_start_date)
         except Exception as error:
             raise map_error(error) from None
 
     def mfa(self, user_id: uuid.UUID, challenge_id: uuid.UUID, otp: str) -> dict[str, str]:
+        result = self.continue_authentication(user_id, challenge_id, otp)
+        if result.token_data is not None:
+            self.sessions.tokens.save(user_id, result.token_data)
+        return self._public_result(result)
+
+    def continue_authentication(self, user_id: uuid.UUID, challenge_id: uuid.UUID,
+                                otp: str) -> AuthenticationResult:
         challenge = self.challenges.consume(user_id, challenge_id)
         if challenge is None:
             raise ConnectionError('challenge_expired', 410)
-        if self.sessions.connections:
-            connection = self.sessions.connections.get(user_id)
-            if connection.get('id') != challenge.state.get('connection_id'):
-                raise ConnectionError('challenge_expired', 410)
         client = self.client_factory()
-        if self.sessions.connections:
-            client._stride_connection_id = uuid.UUID(challenge.state['connection_id'])
         restore_mfa(client, challenge.state)
         try:
             client.resume_login({}, otp)
-            self.sessions.persist(user_id, client)
-            return {'status': 'connected'}
+            expected = challenge.state.get('expected_connection_id')
+            return AuthenticationResult(
+                'connected', client.client.dumps(),
+                expected_connection_id=uuid.UUID(expected) if expected else None,
+                history_start_date=challenge.state.get('history_start_date'))
         except GarminConnectAuthenticationError:
             raise ConnectionError('invalid_mfa', 401) from None
         except Exception as error:

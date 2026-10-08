@@ -208,23 +208,77 @@ def test_curl_mfa_session_cookies_survive_reconstruction():
     assert restored.client._mfa_session.cookies.get('sso') == 'session-secret'
 
 
-def test_disconnect_deletes_token_and_connection(service):
+def test_disconnect_keeps_history_and_delete_data_removes_it(service):
     user_id = uuid.uuid4()
-    service.start(user_id, 'a@example.com', 'password')
+
+    class Database:
+        def __init__(self):
+            self.connection = True
+            self.secret = True
+            self.activities = 1
+
+        def request(self, method, path, *, data):
+            assert method == 'POST'
+            assert data == {'p_user_id': str(user_id)}
+            if path == 'rpc/disconnect_garmin_connection':
+                self.secret = False
+                return True
+            if path == 'rpc/delete_garmin_data':
+                self.connection = False
+                self.activities = 0
+                return None
+            raise AssertionError(path)
+
+    database = Database()
+    connections = SimpleNamespace(database=database)
+    stride = StrideConnectionService(service, connections)
+    stride.disconnect(user_id)
+    assert not database.secret
+    assert database.connection
+    assert database.activities == 1
+    stride.delete_data(user_id)
+    assert not database.connection
+    assert database.activities == 0
+
+
+def test_failed_reconnect_preserves_session_and_success_replaces_it(service):
+    user_id = uuid.uuid4()
+    old_id = uuid.uuid4()
+
+    class Tokens:
+        def __init__(self):
+            self.value = 'old-token'
+            self.connection_id = old_id
+            self.activations = []
+
+        def activate(self, requested_user, expected, token, floor):
+            assert requested_user == user_id
+            assert expected == self.connection_id
+            self.activations.append((expected, token, floor))
+            self.connection_id = uuid.uuid4()
+            self.value = token
+            return self.connection_id
 
     class Connections:
-        deleted = None
+        def get(self, requested_user):
+            assert requested_user == user_id
+            return {'id': str(tokens.connection_id), 'status': 'connected'}
 
-        def __init__(self):
-            self.database = SimpleNamespace(request=lambda *args, **kwargs: None)
-
-        def delete(self, requested_user):
-            self.deleted = requested_user
-
-    connections = Connections()
-    StrideConnectionService(service, connections).disconnect(user_id)
-    assert service.sessions.tokens.load(user_id) is None
-    assert connections.deleted == user_id
+    tokens = Tokens()
+    service.sessions.tokens = tokens
+    stride = StrideConnectionService(service, Connections())
+    FakeGarmin.outcome = 'invalid'
+    with pytest.raises(ConnectionError, match='invalid_credentials'):
+        stride.start(user_id, 'a@example.com', 'wrong')
+    assert tokens.value == 'old-token'
+    assert tokens.connection_id == old_id
+    assert tokens.activations == []
+    FakeGarmin.outcome = 'success'
+    assert stride.start(user_id, 'a@example.com', 'correct', '2024-01-01') == {
+        'status': 'connected'}
+    assert tokens.value == 'fresh-token'
+    assert tokens.connection_id != old_id
+    assert tokens.activations == [(old_id, 'fresh-token', '2024-01-01')]
 
 
 def test_same_user_operations_serialize_and_other_users_continue():

@@ -114,6 +114,18 @@ class EncryptedSupabaseTokenStore:
         if not stored:
             raise RuntimeError('provider_connection_changed')
 
+    def activate(self, user_id: uuid.UUID, expected_connection_id: uuid.UUID | None,
+                 token_data: str, history_start_date: str) -> uuid.UUID:
+        connection_id = self.database.request('POST', 'rpc/activate_garmin_connection', data={
+            'p_user_id': str(user_id),
+            'p_expected_connection_id': (str(expected_connection_id)
+                                         if expected_connection_id else None),
+            'p_ciphertext': self.cipher.encrypt(token_data.encode()).decode(),
+            'p_oldest_date': history_start_date})
+        if not connection_id:
+            raise RuntimeError('provider_connection_changed')
+        return uuid.UUID(connection_id)
+
     def delete(self, user_id: uuid.UUID) -> None:
         self.database.request('DELETE', 'provider_secrets', params={
             'user_id': f'eq.{user_id}', 'provider': 'eq.garmin'})

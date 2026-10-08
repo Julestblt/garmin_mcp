@@ -60,8 +60,8 @@ def test_http_connection_start_keeps_credentials_out_of_response():
             return True
 
     class Service:
-        def start(self, actual_user, email, password):
-            calls.append((actual_user, email, password))
+        def start(self, actual_user, email, password, history_start_date):
+            calls.append((actual_user, email, password, history_start_date))
             return {'status': 'connected'}
 
     components = SimpleNamespace(service=Service(), database=Database())
@@ -76,7 +76,7 @@ def test_http_connection_start_keeps_credentials_out_of_response():
     assert response.status_code == 200
     assert response.json() == {'status': 'connected'}
     assert 'very-secret' not in response.text
-    assert calls == [(user_id, 'runner@example.com', 'very-secret')]
+    assert calls == [(user_id, 'runner@example.com', 'very-secret', '2000-01-01')]
 
 
 class FakeSessions:
