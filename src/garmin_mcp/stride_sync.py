@@ -8,6 +8,7 @@ from garmin_mcp.stride_app import create_stride_components
 from garmin_mcp.stride_garmin import ConnectionError, GarminSessionProvider
 from garmin_mcp.stride_storage import SupabaseDatabase
 from garmin_mcp.stride_logging import configure_logging
+from garmin_mcp.stride_observations import normalize_fitness, normalize_recovery
 
 
 logger = logging.getLogger('garmin_mcp.stride.sync')
@@ -106,6 +107,9 @@ class ActivitySyncWorker:
         return True
 
     def _process(self, job: dict[str, Any]) -> None:
+        if job.get('phase') in ('recovery', 'fitness'):
+            self._process_observations(job)
+            return
         user_id = uuid.UUID(job['user_id'])
         connection_id = uuid.UUID(job['connection_id'])
         end = date.fromisoformat(job['cursor_date']) if job['cursor_date'] else datetime.now(timezone.utc).date()
@@ -172,6 +176,50 @@ class ActivitySyncWorker:
                                   data={'last_sync_at': now})
         logger.info('sync_chunk_completed', extra={'sync_job_id': job['id'],
                     'user_id': str(user_id), 'activity_count': len(rows)})
+
+    def _process_observations(self, job: dict[str, Any]) -> None:
+        user_id = uuid.UUID(job['user_id'])
+        connection_id = uuid.UUID(job['connection_id'])
+        day = date.fromisoformat(job['cursor_date']) if job['cursor_date'] else datetime.now(timezone.utc).date()
+        oldest = date.fromisoformat(job['oldest_date'])
+        client = self.sessions.for_user(user_id, load_profile=True)
+        try:
+            if job['phase'] == 'recovery':
+                rows = normalize_recovery(
+                    day, client.get_sleep_data(day.isoformat()),
+                    client.get_hrv_data(day.isoformat()),
+                    client.get_rhr_day(day.isoformat()),
+                    client.get_stress_data(day.isoformat()),
+                    client.get_body_battery(day.isoformat()),
+                    client.get_training_readiness(day.isoformat()))
+            else:
+                rows = normalize_fitness(
+                    day, client.get_training_status(day.isoformat()),
+                    client.get_max_metrics(day.isoformat()))
+        finally:
+            self.sessions.persist(user_id, client)
+        stored = self.database.request('POST', 'rpc/upsert_provider_observations', data={
+            'p_connection_id': str(connection_id), 'p_user_id': str(user_id),
+            'p_observations': rows})
+        if not stored:
+            raise ConnectionError('reconnect_required', 409)
+        finished = day <= oldest
+        now = datetime.now(timezone.utc).isoformat()
+        self.database.request('PATCH', 'sync_jobs',
+                              params={'id': f"eq.{job['id']}", 'attempts': f"eq.{job['attempts']}"},
+                              data={'state': 'succeeded' if finished else 'queued',
+                                    'cursor_date': None if finished else (day - timedelta(days=1)).isoformat(),
+                                    'oldest_synchronized_date': day.isoformat(),
+                                    'failure_count': 0, 'lease_expires_at': None,
+                                    'updated_at': now,
+                                    'next_attempt_at': (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat(),
+                                    'last_success_at': now if finished else None})
+        if finished:
+            self.database.request('PATCH', 'provider_connections',
+                                  params={'id': f'eq.{connection_id}'},
+                                  data={'last_sync_at': now})
+        logger.info('sync_chunk_completed', extra={'sync_job_id': job['id'],
+                    'user_id': str(user_id), 'phase': job['phase'], 'observation_count': len(rows)})
 
     def _fail(self, job: dict[str, Any], code: str, retry: bool) -> None:
         attempts = job['attempts']
