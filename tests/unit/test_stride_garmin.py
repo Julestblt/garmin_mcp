@@ -8,6 +8,7 @@ from garminconnect import GarminConnectAuthenticationError, GarminConnectTooMany
 from garmin_mcp.stride_garmin import (ConnectionError, GarminConnectionService,
                                       GarminSessionProvider, capture_mfa, restore_mfa)
 from garmin_mcp.stride_storage import FileTokenStore
+from garmin_mcp.stride_service import StrideConnectionService
 
 
 class FakeInternal:
@@ -204,3 +205,22 @@ def test_curl_mfa_session_cookies_survive_reconstruction():
     restored = FakeGarmin()
     restore_mfa(restored, state)
     assert restored.client._mfa_session.cookies.get('sso') == 'session-secret'
+
+
+def test_disconnect_deletes_token_and_connection(service):
+    user_id = uuid.uuid4()
+    service.start(user_id, 'a@example.com', 'password')
+
+    class Connections:
+        deleted = None
+
+        def __init__(self):
+            self.database = SimpleNamespace(request=lambda *args, **kwargs: None)
+
+        def delete(self, requested_user):
+            self.deleted = requested_user
+
+    connections = Connections()
+    StrideConnectionService(service, connections).disconnect(user_id)
+    assert service.sessions.tokens.load(user_id) is None
+    assert connections.deleted == user_id
