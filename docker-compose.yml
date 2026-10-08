@@ -5,6 +5,7 @@ services:
       SUPABASE_URL: ${SUPABASE_URL:?required}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:?required}
       GARMIN_TOKEN_ENCRYPTION_KEY: ${GARMIN_TOKEN_ENCRYPTION_KEY:?required}
+      STRIDE_ALLOWED_HOSTS: ${STRIDE_ALLOWED_HOSTS:-127.0.0.1:8000,localhost:8000,garmin-mcp:8000}
       GARMIN_ENABLED_TOOLS: ${GARMIN_ENABLED_TOOLS:-get_activities,get_activity,get_activity_splits,get_stats,get_sleep_data,get_hrv_data,get_training_readiness,get_training_status,get_rhr_day,get_vo2max_trend}
     ports:
       - "127.0.0.1:8000:8000"
