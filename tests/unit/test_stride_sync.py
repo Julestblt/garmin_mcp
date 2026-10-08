@@ -69,7 +69,7 @@ def test_activity_sync_is_newest_first_resumable_and_idempotent():
 
 def test_normalization_requires_stable_provider_id():
     try:
-        normalize_activity(uuid.uuid4(), {})
+        normalize_activity(uuid.uuid4(), uuid.uuid4(), {})
     except ValueError as error:
         assert 'activityId' in str(error)
     else:

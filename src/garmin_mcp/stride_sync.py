@@ -13,7 +13,8 @@ from garmin_mcp.stride_logging import configure_logging
 logger = logging.getLogger('garmin_mcp.stride.sync')
 
 
-def normalize_activity(user_id: uuid.UUID, activity: dict[str, Any]) -> dict[str, Any]:
+def normalize_activity(user_id: uuid.UUID, connection_id: uuid.UUID,
+                       activity: dict[str, Any]) -> dict[str, Any]:
     provider_id = activity.get('activityId')
     if provider_id is None:
         raise ValueError('Garmin activity is missing activityId')
@@ -22,7 +23,7 @@ def normalize_activity(user_id: uuid.UUID, activity: dict[str, Any]) -> dict[str
     if isinstance(started_at, str) and started_at and not started_at.endswith(('Z', '+00:00')):
         started_at += 'Z'
     return {
-        'user_id': str(user_id), 'provider': 'garmin',
+        'user_id': str(user_id), 'connection_id': str(connection_id), 'provider': 'garmin',
         'provider_activity_id': str(provider_id),
         'activity_type': activity_type.get('typeKey') if isinstance(activity_type, dict) else None,
         'started_at': started_at,
@@ -52,6 +53,7 @@ class ActivitySyncWorker:
 
     def _process(self, job: dict[str, Any]) -> None:
         user_id = uuid.UUID(job['user_id'])
+        connection_id = uuid.UUID(job['connection_id'])
         end = date.fromisoformat(job['cursor_date']) if job['cursor_date'] else datetime.now(timezone.utc).date()
         oldest = date.fromisoformat(job['oldest_date'])
         start = max(oldest, end - timedelta(days=6))
@@ -62,7 +64,7 @@ class ActivitySyncWorker:
             self.sessions.persist(user_id, client)
         if not isinstance(activities, list):
             raise ValueError('Garmin returned invalid activity list')
-        rows = [normalize_activity(user_id, activity) for activity in activities]
+        rows = [normalize_activity(user_id, connection_id, activity) for activity in activities]
         for offset in range(0, len(rows), 100):
             self.database.request('POST', 'provider_activities',
                                   params={'on_conflict': 'user_id,provider,provider_activity_id'},
