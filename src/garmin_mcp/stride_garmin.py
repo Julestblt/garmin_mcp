@@ -1,4 +1,5 @@
 import uuid
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, NoReturn, Protocol
 
@@ -39,6 +40,12 @@ def capture_mfa(client: Garmin) -> dict[str, Any]:
     cookies = [{'name': cookie.name, 'value': cookie.value,
                 'domain': cookie.domain, 'path': cookie.path,
                 'secure': cookie.secure, 'expires': cookie.expires} for cookie in jar]
+    widget_csrf = None
+    if internal._mfa_flow == 'widget':
+        match = re.search(r'name="_csrf"\s+value="(.+?)"', internal._widget_last_resp.text)
+        if not match:
+            raise ConnectionError('provider_unavailable', 503)
+        widget_csrf = match.group(1)
     return {
         'flow': internal._mfa_flow,
         'method': getattr(internal, '_mfa_method', 'email'),
@@ -48,7 +55,7 @@ def capture_mfa(client: Garmin) -> dict[str, Any]:
         'login_params': internal._mfa_login_params,
         'post_headers': internal._mfa_post_headers,
         'service_url': getattr(internal, '_mfa_service_url', None),
-        'widget_html': internal._widget_last_resp.text if internal._mfa_flow == 'widget' else None,
+        'widget_csrf': widget_csrf,
     }
 
 
@@ -69,8 +76,9 @@ def restore_mfa(client: Garmin, state: dict[str, Any]) -> None:
     internal._mfa_post_headers = state['post_headers']
     if state['service_url']:
         internal._mfa_service_url = state['service_url']
-    if state['widget_html'] is not None:
-        internal._widget_last_resp = _WidgetResponse(state['widget_html'])
+    if state['widget_csrf'] is not None:
+        internal._widget_last_resp = _WidgetResponse(
+            f'<input name="_csrf" value="{state["widget_csrf"]}">')
 
 
 @dataclass

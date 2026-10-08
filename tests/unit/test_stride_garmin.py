@@ -5,7 +5,8 @@ import pytest
 import requests
 from garminconnect import GarminConnectAuthenticationError, GarminConnectTooManyRequestsError
 
-from garmin_mcp.stride_garmin import ConnectionError, GarminConnectionService, GarminSessionProvider
+from garmin_mcp.stride_garmin import (ConnectionError, GarminConnectionService,
+                                      GarminSessionProvider, capture_mfa, restore_mfa)
 from garmin_mcp.stride_storage import FileTokenStore
 
 
@@ -164,3 +165,16 @@ def test_missing_session_marks_connection_for_reconnect(tmp_path):
     with pytest.raises(ConnectionError, match='reconnect_required'):
         sessions.for_user(user_id)
     assert connections.status == 'reconnect_required'
+
+
+def test_widget_challenge_keeps_only_csrf_from_html():
+    client = FakeGarmin()
+    client.client._mfa_flow = 'widget'
+    client.client._widget_last_resp = SimpleNamespace(
+        text='<input name="_csrf" value="csrf-token">secret-password')
+    state = capture_mfa(client)
+    assert state['widget_csrf'] == 'csrf-token'
+    assert 'secret-password' not in str(state)
+    restored = FakeGarmin()
+    restore_mfa(restored, state)
+    assert restored.client._widget_last_resp.text == '<input name="_csrf" value="csrf-token">'
