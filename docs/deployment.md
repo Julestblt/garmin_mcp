@@ -7,3 +7,9 @@ Build with `docker build -t stride-garmin .` and start with `docker compose up -
 The image runs as UID 10001 and needs no token volume. It exposes `/healthz` for liveness, `/readyz` for database readiness, `/mcp` for streamable HTTP, and the `/v1/connections/garmin` API. Configure `GARMIN_ENABLED_TOOLS` to restrict the AI context further. Do not expose this service directly to the public internet.
 
 The API and worker both need Supabase access. Worker jobs survive container replacement. The service still depends on Garmin availability and Supabase Auth/PostgREST. Local legacy usage remains `GARMIN_MCP_TRANSPORT=stdio STRIDE_MODE=0 garmin-mcp`; that mode retains filesystem tokens.
+
+## Live validation
+
+Use a dedicated Garmin test account and two dedicated Supabase Auth users in a disposable Stride project. Apply the migrations, start Compose, and export `STRIDE_E2E_LIVE=1`, `STRIDE_E2E_BASE_URL=http://127.0.0.1:8000`, `STRIDE_TEST_USER_A_TOKEN`, `STRIDE_TEST_USER_B_TOKEN`, `GARMIN_TEST_EMAIL`, and `GARMIN_TEST_PASSWORD` from a secret manager. Run `uv run pytest tests/e2e/test_stride_live.py -m e2e -q`. The test prompts without echo if Garmin requests MFA; `GARMIN_TEST_OTP` is also accepted for unattended runs. It restarts the local `garmin-mcp` Compose service, verifies session survival and MCP ownership, disconnects, reconnects, and disconnects again. It does not delete imported test history; use `DELETE /v1/connections/garmin/data` if cleanup is required.
+
+Keep secrets out of shell history, CI logs, and command arguments. Real E2E is opt-in and is absent from normal CI. For Dokploy, deploy API and worker from the same image with the three server secrets, no token volume, a private service network, TLS at the proxy, and `/healthz` as liveness. Migrate Supabase before a rolling deployment. Run one worker initially; database claims allow more later. Monitor `/readyz`, job failures, and stale `last_sync_at`.
