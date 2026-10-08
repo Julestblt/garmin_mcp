@@ -64,11 +64,46 @@ class ConnectionRepository:
             raise RuntimeError('provider_connection_changed')
 
     def get_sync(self, user_id: uuid.UUID) -> dict[str, Any]:
-        rows = self.database.request('GET', 'sync_jobs', params={
-            'user_id': f'eq.{user_id}', 'provider': 'eq.garmin',
-            'select': 'id,state,phase,cursor_date,oldest_synchronized_date,activity_count,last_error_code,last_success_at,updated_at',
-            'order': 'created_at.desc', 'limit': '1'})
-        return rows[0] if rows else {'state': 'not_started'}
+        connection = self.get(user_id)
+        if 'id' not in connection:
+            return {'state': 'not_started', 'categories': {
+                category: {'state': 'pending'} for category in
+                ('activities', 'recovery', 'fitness', 'patterns')}}
+        latest: dict[str, dict[str, Any]] = {}
+        for phase in ('activities', 'recovery', 'fitness'):
+            rows = self.database.request('GET', 'sync_jobs', params={
+                'connection_id': f"eq.{connection['id']}", 'phase': f'eq.{phase}',
+                'select': 'id,state,phase,cursor_date,oldest_synchronized_date,activity_count,last_error_code,last_success_at,updated_at',
+                'order': 'created_at.desc', 'limit': '1'})
+            if rows:
+                latest[phase] = rows[0]
+        categories: dict[str, dict[str, Any]] = {}
+        for category in ('activities', 'recovery', 'fitness'):
+            job = latest.get(category)
+            if job is None:
+                categories[category] = {'state': 'pending'}
+                continue
+            state = {'succeeded': 'complete', 'failed': 'failed',
+                     'running': 'running'}.get(job['state'], 'pending')
+            if state == 'pending' and job['oldest_synchronized_date']:
+                state = 'partial'
+            result: dict[str, Any] = {
+                'state': state,
+                'oldest_synchronized_date': job['oldest_synchronized_date'],
+                'last_success_at': job['last_success_at'],
+                'last_error_code': job['last_error_code'],
+            }
+            if category == 'activities':
+                result['activity_count'] = job['activity_count']
+            categories[category] = result
+        activity_state = categories['activities']['state']
+        patterns_state = ('complete' if activity_state == 'complete' else
+                          'partial' if categories['activities'].get('activity_count', 0) > 0 else
+                          'pending')
+        categories['patterns'] = {'state': patterns_state}
+        return {'connection_id': connection['id'], 'categories': categories,
+                'updated_at': max((row['updated_at'] for row in latest.values()),
+                                  default=None)}
 
 
 class StrideConnectionService:
