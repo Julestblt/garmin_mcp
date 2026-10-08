@@ -13,6 +13,8 @@ class MemoryDatabase:
         self.secrets = {}
         self.challenges = {}
         self.connections = {}
+        self.versions = {}
+        self.leases = {}
 
     def request(self, method, path, *, params=None, data=None, prefer=None):
         if path == 'provider_secrets':
@@ -22,7 +24,7 @@ class MemoryDatabase:
             if method == 'DELETE':
                 self.secrets.pop(key, None)
             if method == 'GET':
-                return [{'ciphertext': self.secrets[key]}] if key in self.secrets else []
+                return [{'ciphertext': self.secrets[key], 'version': self.versions[key]}] if key in self.secrets else []
         if path == 'provider_connections':
             user_id = params['user_id'][3:]
             return [{'id': self.connections.setdefault(user_id, str(uuid.uuid4()))}]
@@ -31,7 +33,28 @@ class MemoryDatabase:
             if self.connections[user_id] != data['p_connection_id']:
                 return False
             self.secrets[(user_id, 'garmin')] = data['p_ciphertext']
+            self.versions[(user_id, 'garmin')] = self.versions.get((user_id, 'garmin'), 0) + 1
             return True
+        if path == 'rpc/acquire_provider_lease':
+            connection_id = data['p_connection_id']
+            if connection_id in self.leases:
+                return False
+            self.leases[connection_id] = data['p_owner']
+            return True
+        if path == 'rpc/renew_provider_lease':
+            return self.leases.get(data['p_connection_id']) == data['p_owner']
+        if path == 'rpc/release_provider_lease':
+            if self.leases.get(data['p_connection_id']) == data['p_owner']:
+                del self.leases[data['p_connection_id']]
+            return None
+        if path == 'rpc/persist_provider_secret':
+            key = (data['p_user_id'], 'garmin')
+            if (self.leases.get(data['p_connection_id']) != data['p_owner']
+                    or self.versions.get(key) != data['p_version']):
+                return None
+            self.secrets[key] = data['p_ciphertext']
+            self.versions[key] += 1
+            return self.versions[key]
         if path == 'auth_challenges':
             if method == 'POST':
                 self.challenges[data['id']] = data
@@ -70,14 +93,23 @@ def test_encrypted_tokens_are_user_scoped_and_deleted():
     assert 'secret-a' not in next(iter(database.secrets.values()))
     assert store.load(user_a) == 'secret-a'
     assert store.load(user_b) == 'secret-b'
+    owner = uuid.uuid4()
+    connection_id = uuid.UUID(database.connections[str(user_b)])
+    assert store.acquire(connection_id, owner)
+    assert not store.acquire(connection_id, uuid.uuid4())
+    assert store.save_if_version(user_b, connection_id, owner, 1, 'secret-b-new') == 2
+    with pytest.raises(RuntimeError, match='provider_session_conflict'):
+        store.save_if_version(user_b, connection_id, owner, 1, 'stale')
+    assert store.load(user_b) == 'secret-b-new'
+    store.release(connection_id, owner)
     old_connection = uuid.UUID(database.connections[str(user_b)])
     database.connections[str(user_b)] = str(uuid.uuid4())
     with pytest.raises(RuntimeError, match='provider_connection_changed'):
         store.save_if_connection(user_b, old_connection, 'stale-token')
-    assert store.load(user_b) == 'secret-b'
+    assert store.load(user_b) == 'secret-b-new'
     store.delete(user_a)
     assert store.load(user_a) is None
-    assert store.load(user_b) == 'secret-b'
+    assert store.load(user_b) == 'secret-b-new'
 
 
 def test_challenge_ownership_and_single_use():

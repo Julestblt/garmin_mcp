@@ -1,4 +1,5 @@
 import uuid
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -224,3 +225,76 @@ def test_disconnect_deletes_token_and_connection(service):
     StrideConnectionService(service, connections).disconnect(user_id)
     assert service.sessions.tokens.load(user_id) is None
     assert connections.deleted == user_id
+
+
+def test_same_user_operations_serialize_and_other_users_continue():
+    user_a, user_b = uuid.uuid4(), uuid.uuid4()
+    connection_ids = {user_a: uuid.uuid4(), user_b: uuid.uuid4()}
+
+    class Connections:
+        def get(self, user_id):
+            return {'id': str(connection_ids[user_id]), 'status': 'connected'}
+
+    class LeasedTokens:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.values = {user_a: ('token-a', 1), user_b: ('token-b', 1)}
+            self.owners = {}
+
+        def acquire(self, connection_id, owner):
+            with self.lock:
+                if connection_id in self.owners:
+                    return False
+                self.owners[connection_id] = owner
+                return True
+
+        def renew(self, connection_id, owner):
+            return self.owners.get(connection_id) == owner
+
+        def release(self, connection_id, owner):
+            with self.lock:
+                if self.owners.get(connection_id) == owner:
+                    del self.owners[connection_id]
+
+        def load_versioned(self, user_id):
+            return self.values[user_id]
+
+        def save_if_version(self, user_id, connection_id, owner, version, token):
+            with self.lock:
+                assert self.owners[connection_id] == owner
+                assert self.values[user_id][1] == version
+                self.values[user_id] = token, version + 1
+                return version + 1
+
+    tokens = LeasedTokens()
+    sessions = GarminSessionProvider(tokens, client_factory=FakeGarmin, connections=Connections())
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+
+    def first():
+        client = sessions.for_user(user_a)
+        first_entered.set()
+        assert release_first.wait(3)
+        sessions.persist(user_a, client)
+
+    def second():
+        assert first_entered.wait(3)
+        client = sessions.for_user(user_a)
+        second_entered.set()
+        sessions.persist(user_a, client)
+
+    thread_a = threading.Thread(target=first)
+    thread_b = threading.Thread(target=second)
+    thread_a.start()
+    thread_b.start()
+    assert first_entered.wait(3)
+    other = sessions.for_user(user_b)
+    sessions.persist(user_b, other)
+    assert not second_entered.wait(0.2)
+    release_first.set()
+    thread_a.join(3)
+    thread_b.join(3)
+    assert second_entered.is_set()
+    assert tokens.values[user_a] == ('refreshed-refreshed-token-a', 3)
+    assert tokens.values[user_b] == ('refreshed-token-b', 2)

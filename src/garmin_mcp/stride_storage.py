@@ -66,11 +66,37 @@ class EncryptedSupabaseTokenStore:
         self.cipher = Fernet(key.encode())
 
     def load(self, user_id: uuid.UUID) -> str | None:
+        stored = self.load_versioned(user_id)
+        return stored[0] if stored else None
+
+    def load_versioned(self, user_id: uuid.UUID) -> tuple[str, int] | None:
         rows = self.database.request('GET', 'provider_secrets', params={
-            'user_id': f'eq.{user_id}', 'provider': 'eq.garmin', 'select': 'ciphertext'})
+            'user_id': f'eq.{user_id}', 'provider': 'eq.garmin', 'select': 'ciphertext,version'})
         if not rows:
             return None
-        return self.cipher.decrypt(rows[0]['ciphertext'].encode()).decode()
+        return self.cipher.decrypt(rows[0]['ciphertext'].encode()).decode(), rows[0]['version']
+
+    def acquire(self, connection_id: uuid.UUID, owner: uuid.UUID) -> bool:
+        return bool(self.database.request('POST', 'rpc/acquire_provider_lease', data={
+            'p_connection_id': str(connection_id), 'p_owner': str(owner)}))
+
+    def renew(self, connection_id: uuid.UUID, owner: uuid.UUID) -> bool:
+        return bool(self.database.request('POST', 'rpc/renew_provider_lease', data={
+            'p_connection_id': str(connection_id), 'p_owner': str(owner)}))
+
+    def release(self, connection_id: uuid.UUID, owner: uuid.UUID) -> None:
+        self.database.request('POST', 'rpc/release_provider_lease', data={
+            'p_connection_id': str(connection_id), 'p_owner': str(owner)})
+
+    def save_if_version(self, user_id: uuid.UUID, connection_id: uuid.UUID,
+                        owner: uuid.UUID, version: int, token_data: str) -> int:
+        next_version = self.database.request('POST', 'rpc/persist_provider_secret', data={
+            'p_user_id': str(user_id), 'p_connection_id': str(connection_id),
+            'p_owner': str(owner), 'p_version': version,
+            'p_ciphertext': self.cipher.encrypt(token_data.encode()).decode()})
+        if next_version is None:
+            raise RuntimeError('provider_session_conflict')
+        return int(next_version)
 
     def save(self, user_id: uuid.UUID, token_data: str) -> None:
         connections = self.database.request('GET', 'provider_connections', params={

@@ -1,5 +1,7 @@
 import uuid
 import re
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, NoReturn, Protocol
 
@@ -102,23 +104,70 @@ class GarminSessionProvider:
                                                       'reconnect_required', 'session_expired')
         raise ConnectionError('reconnect_required', 409)
 
+    def _acquire(self, connection_id: uuid.UUID) -> uuid.UUID:
+        owner = uuid.uuid4()
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            if self.tokens.acquire(connection_id, owner):
+                return owner
+            time.sleep(0.1)
+        raise ConnectionError('provider_unavailable', 503)
+
+    def _release(self, client: Garmin) -> None:
+        owner = getattr(client, '_stride_lease_owner', None)
+        if owner is None:
+            return
+        client._stride_lease_owner = None
+        stop = getattr(client, '_stride_lease_stop')
+        stop.set()
+        self.tokens.release(client._stride_connection_id, owner)
+
+    def _renew(self, client: Garmin) -> None:
+        stop = threading.Event()
+        client._stride_lease_stop = stop
+        owner = client._stride_lease_owner
+        connection_id = client._stride_connection_id
+
+        def maintain() -> None:
+            while not stop.wait(30):
+                try:
+                    if not self.tokens.renew(connection_id, owner):
+                        return
+                except Exception:
+                    return
+
+        threading.Thread(target=maintain, name='garmin-session-lease', daemon=True).start()
+
     def for_user(self, user_id: uuid.UUID, load_profile: bool = False) -> Garmin:
         connection = self.connections.get(user_id) if self.connections else None
         if connection and connection['status'] != 'connected':
             raise ConnectionError('reconnect_required', 409)
-        token = self.tokens.load(user_id)
-        if token is None:
-            self._reconnect_required(connection)
-        client = self.client_factory()
-        if connection:
-            client._stride_connection_id = uuid.UUID(connection['id'])
-        client._stride_last_token = token
+        owner = None
+        client = None
+        ready = False
         try:
+            if connection and hasattr(self.tokens, 'acquire'):
+                owner = self._acquire(uuid.UUID(connection['id']))
+                stored = self.tokens.load_versioned(user_id)
+                token = stored[0] if stored else None
+            else:
+                stored = None
+                token = self.tokens.load(user_id)
+            if token is None:
+                self._reconnect_required(connection)
+            client = self.client_factory()
+            if connection:
+                client._stride_connection_id = uuid.UUID(connection['id'])
+            if owner:
+                client._stride_lease_owner = owner
+                client._stride_token_version = stored[1]
+                self._renew(client)
+            client._stride_last_token = token
             internal = client.client
-            internal.loads(token)
-        except (GarminConnectAuthenticationError, GarminConnectConnectionError):
-            self._reconnect_required(connection)
-        try:
+            try:
+                internal.loads(token)
+            except (GarminConnectAuthenticationError, GarminConnectConnectionError):
+                self._reconnect_required(connection)
             if internal.di_refresh_token and internal._token_expires_soon():
                 internal._refresh_session()
             if load_profile:
@@ -127,19 +176,38 @@ class GarminSessionProvider:
                 client.display_name = profile.get('displayName')
                 client.full_name = profile.get('fullName', '')
                 client.unit_system = settings.get('userData', {}).get('measurementSystem')
+            self._save_changed(user_id, client)
+            ready = True
+            return client
         except Exception as error:
             if isinstance(error, GarminConnectAuthenticationError):
                 self._reconnect_required(connection)
+            if isinstance(error, ConnectionError):
+                raise
             raise map_error(error) from None
-        self.persist(user_id, client)
-        return client
+        finally:
+            if not ready and owner:
+                if client is None:
+                    self.tokens.release(uuid.UUID(connection['id']), owner)
+                else:
+                    self._release(client)
 
     def persist(self, user_id: uuid.UUID, client: Garmin) -> None:
+        try:
+            self._save_changed(user_id, client)
+        finally:
+            self._release(client)
+
+    def _save_changed(self, user_id: uuid.UUID, client: Garmin) -> None:
         token_data = client.client.dumps()
         if getattr(client, '_stride_last_token', None) == token_data:
             return
         connection_id = getattr(client, '_stride_connection_id', None)
-        if connection_id and hasattr(self.tokens, 'save_if_connection'):
+        owner = getattr(client, '_stride_lease_owner', None)
+        if owner:
+            client._stride_token_version = self.tokens.save_if_version(
+                user_id, connection_id, owner, client._stride_token_version, token_data)
+        elif connection_id and hasattr(self.tokens, 'save_if_connection'):
             self.tokens.save_if_connection(user_id, connection_id, token_data)
         else:
             self.tokens.save(user_id, token_data)
