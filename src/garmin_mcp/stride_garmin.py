@@ -1,8 +1,8 @@
 import logging
-import uuid
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, NoReturn, Protocol
 
