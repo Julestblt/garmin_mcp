@@ -122,6 +122,9 @@ def register_routes(app: Any, components: StrideComponents) -> None:
             allowed = await anyio.to_thread.run_sync(lambda: components.database.request(
                 'POST', 'rpc/allow_auth_attempt', data={'p_user_id': str(user_id)}))
             if not allowed:
+                logger.warning('garmin_auth_attempt_denied', extra={
+                    'request_id': request_id, 'user_id': str(user_id),
+                    'error_code': 'rate_limited'})
                 return _error('rate_limited', 429)
             result = await anyio.to_thread.run_sync(components.service.start, user_id, email,
                                                     password, history_start_date)

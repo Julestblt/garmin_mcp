@@ -59,6 +59,16 @@ class SupabaseDatabase:
         response.raise_for_status()
         return response.json() if response.content else None
 
+    def count(self, path: str, *, params: dict[str, str] | None = None) -> int:
+        headers = dict(self.headers)
+        headers['Prefer'] = 'count=exact'
+        headers['Range'] = '0-0'
+        response = requests.get(self.url + '/' + path, params=params, headers=headers,
+                                timeout=20)
+        response.raise_for_status()
+        content_range = response.headers.get('Content-Range', '*/0')
+        return int(content_range.rsplit('/', 1)[1])
+
 
 class EncryptedSupabaseTokenStore:
     def __init__(self, database: SupabaseDatabase, key: str):

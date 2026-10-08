@@ -4,6 +4,14 @@ import sys
 from datetime import datetime, timezone
 
 
+LOG_FIELDS = (
+    'request_id', 'user_id', 'connection_id', 'sync_job_id', 'error_code',
+    'phase', 'mode', 'state', 'status', 'activity_count', 'observation_count',
+    'job_count', 'duration_ms', 'attempts', 'failure_count', 'rows_imported',
+    'retry', 'queue_depth', 'tool_name',
+)
+
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         data = {
@@ -12,7 +20,7 @@ class JsonFormatter(logging.Formatter):
             'logger': record.name,
             'event': record.getMessage(),
         }
-        for name in ('request_id', 'user_id', 'connection_id', 'sync_job_id', 'error_code'):
+        for name in LOG_FIELDS:
             value = getattr(record, name, None)
             if value is not None:
                 data[name] = value

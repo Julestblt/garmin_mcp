@@ -6,6 +6,10 @@ Build with `docker build -t stride-garmin .` and start with `docker compose up -
 
 The image runs as UID 10001 and needs no token volume. It exposes `/healthz` for liveness, `/readyz` for database readiness, `/mcp` for streamable HTTP, and the `/v1/connections/garmin` API. Configure `GARMIN_ENABLED_TOOLS` to restrict the AI context further. Do not expose this service directly to the public internet.
 
+## Monitoring
+
+Both containers write one-line JSON to stderr. Logs never contain passwords, OTPs, session tokens, challenge state, or keys; they carry stable error codes plus user, connection, and job IDs. Useful events to alert on: `garmin_auth_attempt_denied` (brute-force pressure), `garmin_connection_failed`/`garmin_mfa_failed`, `garmin_token_refreshed` (unexpected frequency), `sync_job_failed` with a rising `failure_count`, `reconnect_required`, `sync_queue_depth` sustained above zero, and `sync_job_finished` `duration_ms`. `stale_sync_job_ignored` should be rare; a steady stream means jobs outlive their lease. Scrape stderr with the platform log driver; no metrics endpoint is exposed.
+
 The API and worker both need Supabase access. Worker jobs survive container replacement. The service still depends on Garmin availability and Supabase Auth/PostgREST. Local legacy usage remains `GARMIN_MCP_TRANSPORT=stdio STRIDE_MODE=0 garmin-mcp`; that mode retains filesystem tokens.
 
 ## Live validation

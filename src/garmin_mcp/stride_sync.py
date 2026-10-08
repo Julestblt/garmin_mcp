@@ -103,6 +103,11 @@ class ActivitySyncWorker:
         if not jobs:
             return False
         job = jobs[0]
+        started = time.monotonic()
+        logger.info('sync_job_started', extra={
+            'sync_job_id': job['id'], 'user_id': job['user_id'],
+            'phase': job.get('phase'), 'mode': job.get('mode'),
+            'attempts': job.get('attempts')})
         try:
             self._process(job)
         except StaleSyncJob:
@@ -113,6 +118,11 @@ class ActivitySyncWorker:
         except Exception:
             logger.exception('sync_job_failed', extra={'sync_job_id': job['id'], 'user_id': job['user_id']})
             self._fail(job, SYNC_FAILED, retry=True)
+        else:
+            logger.info('sync_job_finished', extra={
+                'sync_job_id': job['id'], 'user_id': job['user_id'],
+                'phase': job.get('phase'),
+                'duration_ms': int((time.monotonic() - started) * 1000)})
         return True
 
     def _process(self, job: dict[str, Any]) -> None:
@@ -251,7 +261,14 @@ class ActivitySyncWorker:
                                     'failure_count': failure_count,
                                     'next_attempt_at': (datetime.now(timezone.utc) + timedelta(seconds=backoff)).isoformat(),
                                     'lease_expires_at': None})
+        logger.warning('sync_job_retry_scheduled' if state == 'queued' else 'sync_job_failed',
+                       extra={'sync_job_id': job['id'], 'user_id': job['user_id'],
+                              'phase': job.get('phase'), 'error_code': code,
+                              'failure_count': failure_count, 'retry': state == 'queued'})
         if code == 'reconnect_required':
+            logger.warning('reconnect_required', extra={
+                'sync_job_id': job['id'], 'user_id': job['user_id'],
+                'connection_id': job['connection_id'], 'error_code': code})
             self.database.request('PATCH', 'provider_connections',
                                   params={'id': f"eq.{job['connection_id']}"},
                                   data={'status': 'reconnect_required', 'last_error_code': code})
@@ -263,6 +280,7 @@ def main() -> None:
     worker = ActivitySyncWorker(components.database, components.sessions)
     next_cleanup = 0.0
     next_incremental_schedule = 0.0
+    next_queue_report = 0.0
     while True:
         if time.monotonic() >= next_incremental_schedule:
             scheduled = components.database.request('POST', 'rpc/schedule_incremental_sync', data={})
@@ -274,5 +292,13 @@ def main() -> None:
             components.database.request('DELETE', 'auth_attempts', params={
                 'window_number': f'lt.{int(time.time() // 600) - 2}'})
             next_cleanup = time.monotonic() + 3600
+        if time.monotonic() >= next_queue_report:
+            try:
+                depth = components.database.count('sync_jobs', params={
+                    'state': 'in.(queued,running)'})
+                logger.info('sync_queue_depth', extra={'queue_depth': depth})
+            except Exception:
+                logger.warning('sync_queue_depth_unavailable')
+            next_queue_report = time.monotonic() + 60
         if not worker.run_once():
             time.sleep(5)

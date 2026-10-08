@@ -1,3 +1,4 @@
+import logging
 import uuid
 import re
 import threading
@@ -12,6 +13,9 @@ from garminconnect import (Garmin, GarminConnectAuthenticationError,
 from garmin_mcp.stride_errors import (CHALLENGE_EXPIRED, INVALID_CREDENTIALS, INVALID_MFA,
                                       PROVIDER_UNAVAILABLE, RATE_LIMITED, RECONNECT_REQUIRED)
 from garmin_mcp.stride_storage import SupabaseChallengeStore, TokenStore
+
+
+logger = logging.getLogger('garmin_mcp.stride.garmin')
 
 
 class ConnectionError(Exception):
@@ -113,6 +117,9 @@ class GarminSessionProvider:
         if connection and self.connections:
             self.connections.set_status_if_connection(uuid.UUID(connection['id']),
                                                       'reconnect_required', 'session_expired')
+        logger.warning('reconnect_required', extra={
+            'connection_id': connection['id'] if connection else None,
+            'error_code': RECONNECT_REQUIRED})
         raise ConnectionError(RECONNECT_REQUIRED, 409)
 
     def _acquire(self, connection_id: uuid.UUID) -> uuid.UUID:
@@ -181,6 +188,9 @@ class GarminSessionProvider:
                 self._reconnect_required(connection)
             if internal.di_refresh_token and internal._token_expires_soon():
                 internal._refresh_session()
+                logger.info('garmin_token_refreshed', extra={
+                    'user_id': str(user_id),
+                    'connection_id': connection['id'] if connection else None})
             if load_profile:
                 profile = internal.connectapi('/userprofile-service/socialProfile')
                 settings = internal.connectapi(client.garmin_connect_user_settings_url)
