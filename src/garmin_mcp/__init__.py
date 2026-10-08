@@ -575,15 +575,23 @@ def main():
         print(str(exc), file=sys.stderr)
         sys.exit(1)
 
-    # Start Garmin login in the background so it never blocks the MCP
-    # handshake (issue #255). Tool calls block on it individually instead,
-    # through _GarminProxy -> _PendingGarminClient, once they're actually
-    # invoked. 90s comfortably covers a normal slow login while still
-    # failing well before a client's own initialize timeout would matter
-    # again on a later call.
-    pending_client = _PendingGarminClient(timeout=90.0)
-    pending_client.start(lambda: init_api(email, password))
-    garmin_client = _GarminProxy(pending_client)
+    stride_mode = os.getenv('STRIDE_MODE', '').lower() in ('1', 'true', 'yes')
+    if stride_mode:
+        from garmin_mcp.stride_logging import configure_logging
+        configure_logging()
+        if transport != 'streamable-http':
+            raise ValueError('STRIDE_MODE requires GARMIN_MCP_TRANSPORT=streamable-http')
+        from garmin_mcp.stride_app import create_stride_components
+        from garmin_mcp.stride_mcp import DEFAULT_TOOLS, UserScopedGarminProxy, read_only_tool
+        components = create_stride_components()
+        enabled_tools = enabled_tools or DEFAULT_TOOLS
+        if not all(read_only_tool(name) for name in enabled_tools):
+            raise ValueError('Stride MCP tools must be read-only')
+        garmin_client = UserScopedGarminProxy(components.sessions)
+    else:
+        pending_client = _PendingGarminClient(timeout=90.0)
+        pending_client.start(lambda: init_api(email, password))
+        garmin_client = _GarminProxy(pending_client)
 
     # Configure all modules with the Garmin client
     activity_management.configure(garmin_client)
@@ -605,7 +613,21 @@ def main():
 
     # Create the MCP app, wrapped so the env-var filter can drop tools.
     # host/port only matter for the HTTP transports; stdio ignores them.
-    fastmcp = FastMCP("Garmin Connect v1.0", host=http_host, port=http_port)
+    if stride_mode:
+        from mcp.server.auth.settings import AuthSettings
+        from mcp.server.transport_security import TransportSecuritySettings
+        allowed_hosts = [host.strip() for host in os.getenv(
+            'STRIDE_ALLOWED_HOSTS', '127.0.0.1:8000,localhost:8000').split(',') if host.strip()]
+        fastmcp = FastMCP(
+            'Garmin Connect v1.0', host=http_host, port=http_port,
+            stateless_http=True, token_verifier=components.verifier,
+            auth=AuthSettings(issuer_url=components.supabase_url.rstrip('/') + '/auth/v1',
+                              resource_server_url=None),
+            transport_security=TransportSecuritySettings(
+                allowed_hosts=allowed_hosts, allowed_origins=[]),
+        )
+    else:
+        fastmcp = FastMCP("Garmin Connect v1.0", host=http_host, port=http_port)
     app = _ToolFilter(fastmcp, enabled_tools, disabled_tools)
     if enabled_tools:
         print(f"Tool filter: allowlist of {len(enabled_tools)} tool(s).", file=sys.stderr)
@@ -650,6 +672,10 @@ def main():
         @fastmcp.custom_route("/healthz", methods=["GET"])
         async def healthz(_request: "Request") -> "PlainTextResponse":
             return PlainTextResponse("ok")
+
+        if stride_mode:
+            from garmin_mcp.stride_app import register_routes
+            register_routes(fastmcp, components)
 
         print(
             f"Serving MCP over {transport} on {http_host}:{http_port}",

@@ -1105,3 +1105,8 @@ If you are working from a local checkout or fork:
 ```bash
 uv tool install --python 3.12 --force C:\Users\aresd\Desktop\programacion\garmin_mcp
 ```
+# Stride integration mode
+
+This fork adds a multi-user Stride mode alongside the upstream local MCP server. Stride mode validates Supabase Auth bearer tokens, stores encrypted Garmin sessions in Supabase, exposes connection endpoints and a stateless `/mcp` endpoint, and runs activity synchronization in a separate worker. See [architecture](docs/architecture.md), [authentication](docs/authentication.md), [synchronization](docs/synchronization.md), [security](docs/security.md), and [deployment](docs/deployment.md).
+
+Apply the [Supabase migrations](supabase/migrations/), set the secrets documented in [deployment](docs/deployment.md), then run `docker compose up -d --build`. Existing local stdio usage remains available with `STRIDE_MODE=0`.

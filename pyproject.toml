@@ -16,11 +16,14 @@ dependencies = [
     # MCPServer). Cap until the server is ported to the new API.
     "mcp>=1.28.1,<2",
     "fitparse>=1.2.0",
+    "cryptography>=44,<47",
+    "httpx>=0.27,<1",
 ]
 
 [project.scripts]
 garmin-mcp = "garmin_mcp:main"
 garmin-mcp-auth = "garmin_mcp.auth_cli:main"
+garmin-mcp-worker = "garmin_mcp.stride_sync:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/garmin_mcp"]
@@ -32,4 +35,3 @@ dev-dependencies = [
     "pytest-mock>=3.14.0",
     "pytest-timeout>=2.3.1",
 ]
-
