@@ -52,6 +52,20 @@ This repository uses GitHub Actions for continuous integration and security chec
 1. `dependency-check` - Security and dependency validation
 2. `code-quality` - Code syntax and import checks
 
+### 4. Migrations (job in `ci.yml`)
+
+Applies every file in `supabase/migrations/` in timestamp order against a
+disposable `postgres:16` service container, after loading
+`supabase/tests/bootstrap.sql`. This catches invalid SQL, broken function
+signatures, and migration ordering problems without a real Supabase project.
+
+### 5. Stride Live E2E (`stride-live-e2e.yml`)
+
+Manual only (`workflow_dispatch`), gated on the `stride-live-e2e`
+environment. Uses real Garmin and Supabase secrets to build Compose, wait
+for readiness, and run the opt-in live suite. It does not run for pull
+requests or pushes. See `docs/deployment.md` for the required secrets.
+
 ## Running Tests Locally
 
 To run the same tests that CI runs:

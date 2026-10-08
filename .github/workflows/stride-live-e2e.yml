@@ -1,0 +1,87 @@
+name: Stride Live E2E
+
+# Manual, secret-gated validation against a real Garmin account and a
+# disposable Supabase project. Never runs for pull requests or pushes.
+# Configure the secrets on the `stride-live-e2e` environment and hold them
+# no longer than needed. The Supabase user tokens expire; refresh them
+# before dispatching the workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this live run is being triggered
+        required: false
+        default: manual validation
+
+concurrency:
+  group: stride-live-e2e
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    environment: stride-live-e2e
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Install dependencies
+      run: uv sync --frozen
+
+    - name: Validate required configuration
+      env:
+        SUPABASE_URL: ${{ secrets.STRIDE_SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STRIDE_SUPABASE_SERVICE_ROLE_KEY }}
+        GARMIN_TOKEN_ENCRYPTION_KEY: ${{ secrets.STRIDE_GARMIN_TOKEN_ENCRYPTION_KEY }}
+        STRIDE_TEST_USER_A_TOKEN: ${{ secrets.STRIDE_TEST_USER_A_TOKEN }}
+        STRIDE_TEST_USER_B_TOKEN: ${{ secrets.STRIDE_TEST_USER_B_TOKEN }}
+        GARMIN_TEST_EMAIL: ${{ secrets.GARMIN_TEST_EMAIL }}
+        GARMIN_TEST_PASSWORD: ${{ secrets.GARMIN_TEST_PASSWORD }}
+      run: |
+        missing=0
+        for name in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY GARMIN_TOKEN_ENCRYPTION_KEY \
+                    STRIDE_TEST_USER_A_TOKEN STRIDE_TEST_USER_B_TOKEN \
+                    GARMIN_TEST_EMAIL GARMIN_TEST_PASSWORD; do
+          if [ -z "${!name:-}" ]; then
+            echo "::error::Missing required secret for $name"
+            missing=1
+          fi
+        done
+        exit $missing
+
+    - name: Start API and worker
+      env:
+        SUPABASE_URL: ${{ secrets.STRIDE_SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STRIDE_SUPABASE_SERVICE_ROLE_KEY }}
+        GARMIN_TOKEN_ENCRYPTION_KEY: ${{ secrets.STRIDE_GARMIN_TOKEN_ENCRYPTION_KEY }}
+        STRIDE_ALLOWED_HOSTS: 127.0.0.1:8000,localhost:8000,garmin-mcp:8000
+      run: docker compose up -d --build
+
+    - name: Wait for readiness
+      run: |
+        for _ in $(seq 1 60); do
+          if curl -fsS http://127.0.0.1:8000/readyz >/dev/null; then exit 0; fi
+          sleep 2
+        done
+        docker compose logs
+        exit 1
+
+    - name: Run live E2E suite
+      env:
+        STRIDE_E2E_LIVE: '1'
+        STRIDE_E2E_BASE_URL: http://127.0.0.1:8000
+        STRIDE_TEST_USER_A_TOKEN: ${{ secrets.STRIDE_TEST_USER_A_TOKEN }}
+        STRIDE_TEST_USER_B_TOKEN: ${{ secrets.STRIDE_TEST_USER_B_TOKEN }}
+        GARMIN_TEST_EMAIL: ${{ secrets.GARMIN_TEST_EMAIL }}
+        GARMIN_TEST_PASSWORD: ${{ secrets.GARMIN_TEST_PASSWORD }}
+        GARMIN_TEST_OTP: ${{ secrets.GARMIN_TEST_OTP }}
+      run: uv run pytest tests/e2e/test_stride_live.py -m e2e -q
+
+    - name: Tear down
+      if: always()
+      run: docker compose down -v
