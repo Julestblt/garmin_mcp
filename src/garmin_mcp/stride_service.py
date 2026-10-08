@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 from mcp.server.auth.provider import AccessToken
 
+from garmin_mcp.stride_errors import CHALLENGE_EXPIRED, CONNECTION_CHANGED, INVALID_REQUEST
 from garmin_mcp.stride_garmin import ConnectionError, GarminConnectionService
 from garmin_mcp.stride_storage import SupabaseDatabase
 
@@ -123,9 +124,9 @@ class StrideConnectionService:
         try:
             floor = date.fromisoformat(history_start_date)
         except ValueError:
-            raise ConnectionError('invalid_request', 400) from None
+            raise ConnectionError(INVALID_REQUEST, 400) from None
         if floor > date.today() or floor < date(1980, 1, 1):
-            raise ConnectionError('invalid_request', 400)
+            raise ConnectionError(INVALID_REQUEST, 400)
         previous = self.connections.get(user_id)
         expected = (uuid.UUID(previous['id']) if previous['status'] != 'disconnected'
                     else None)
@@ -137,7 +138,7 @@ class StrideConnectionService:
                                                      history_start_date)
             except RuntimeError as error:
                 if str(error) == 'provider_connection_changed':
-                    raise ConnectionError('connection_changed', 409) from None
+                    raise ConnectionError(CONNECTION_CHANGED, 409) from None
                 raise
         return self.garmin._public_result(result)
 
@@ -150,7 +151,7 @@ class StrideConnectionService:
                                                      result.history_start_date or '2000-01-01')
             except RuntimeError as error:
                 if str(error) == 'provider_connection_changed':
-                    raise ConnectionError('challenge_expired', 410) from None
+                    raise ConnectionError(CHALLENGE_EXPIRED, 410) from None
                 raise
         return self.garmin._public_result(result)
 

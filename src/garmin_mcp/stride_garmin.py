@@ -9,6 +9,8 @@ import requests
 from garminconnect import (Garmin, GarminConnectAuthenticationError,
                            GarminConnectConnectionError, GarminConnectTooManyRequestsError)
 
+from garmin_mcp.stride_errors import (CHALLENGE_EXPIRED, INVALID_CREDENTIALS, INVALID_MFA,
+                                      PROVIDER_UNAVAILABLE, RATE_LIMITED, RECONNECT_REQUIRED)
 from garmin_mcp.stride_storage import SupabaseChallengeStore, TokenStore
 
 
@@ -21,12 +23,12 @@ class ConnectionError(Exception):
 
 def map_error(error: Exception) -> ConnectionError:
     if isinstance(error, GarminConnectTooManyRequestsError):
-        return ConnectionError('rate_limited', 429)
+        return ConnectionError(RATE_LIMITED, 429)
     if isinstance(error, GarminConnectAuthenticationError):
-        return ConnectionError('invalid_credentials', 401)
+        return ConnectionError(INVALID_CREDENTIALS, 401)
     if isinstance(error, GarminConnectConnectionError):
-        return ConnectionError('provider_unavailable', 503)
-    return ConnectionError('provider_unavailable', 503)
+        return ConnectionError(PROVIDER_UNAVAILABLE, 503)
+    return ConnectionError(PROVIDER_UNAVAILABLE, 503)
 
 
 class ConnectionReader(Protocol):
@@ -46,7 +48,7 @@ def capture_mfa(client: Garmin) -> dict[str, Any]:
     if internal._mfa_flow == 'widget':
         match = re.search(r'name="_csrf"\s+value="(.+?)"', internal._widget_last_resp.text)
         if not match:
-            raise ConnectionError('provider_unavailable', 503)
+            raise ConnectionError(PROVIDER_UNAVAILABLE, 503)
         widget_csrf = match.group(1)
     return {
         'flow': internal._mfa_flow,
@@ -111,7 +113,7 @@ class GarminSessionProvider:
         if connection and self.connections:
             self.connections.set_status_if_connection(uuid.UUID(connection['id']),
                                                       'reconnect_required', 'session_expired')
-        raise ConnectionError('reconnect_required', 409)
+        raise ConnectionError(RECONNECT_REQUIRED, 409)
 
     def _acquire(self, connection_id: uuid.UUID) -> uuid.UUID:
         owner = uuid.uuid4()
@@ -120,7 +122,7 @@ class GarminSessionProvider:
             if self.tokens.acquire(connection_id, owner):
                 return owner
             time.sleep(0.1)
-        raise ConnectionError('provider_unavailable', 503)
+        raise ConnectionError(PROVIDER_UNAVAILABLE, 503)
 
     def _release(self, client: Garmin) -> None:
         owner = getattr(client, '_stride_lease_owner', None)
@@ -150,7 +152,7 @@ class GarminSessionProvider:
     def for_user(self, user_id: uuid.UUID, load_profile: bool = False) -> Garmin:
         connection = self.connections.get(user_id) if self.connections else None
         if connection and connection['status'] != 'connected':
-            raise ConnectionError('reconnect_required', 409)
+            raise ConnectionError(RECONNECT_REQUIRED, 409)
         owner = None
         client = None
         ready = False
@@ -273,7 +275,7 @@ class GarminConnectionService:
                                 otp: str) -> AuthenticationResult:
         challenge = self.challenges.consume(user_id, challenge_id)
         if challenge is None:
-            raise ConnectionError('challenge_expired', 410)
+            raise ConnectionError(CHALLENGE_EXPIRED, 410)
         client = self.client_factory()
         restore_mfa(client, challenge.state)
         try:
@@ -284,6 +286,6 @@ class GarminConnectionService:
                 expected_connection_id=uuid.UUID(expected) if expected else None,
                 history_start_date=challenge.state.get('history_start_date'))
         except GarminConnectAuthenticationError:
-            raise ConnectionError('invalid_mfa', 401) from None
+            raise ConnectionError(INVALID_MFA, 401) from None
         except Exception as error:
             raise map_error(error) from None

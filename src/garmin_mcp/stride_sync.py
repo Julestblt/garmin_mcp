@@ -5,9 +5,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from garmin_mcp.stride_app import create_stride_components
+from garmin_mcp.stride_errors import SYNC_FAILED, is_retryable
 from garmin_mcp.stride_garmin import ConnectionError, GarminSessionProvider
 from garmin_mcp.stride_storage import SupabaseDatabase
 from garmin_mcp.stride_logging import configure_logging
+from garmin_mcp.stride_models import Activity, ActivitySegment
 from garmin_mcp.stride_observations import normalize_fitness, normalize_recovery
 
 
@@ -27,7 +29,7 @@ def _source_time(value: str | None) -> datetime | None:
 
 def normalize_activity(user_id: uuid.UUID, connection_id: uuid.UUID,
                        activity: dict[str, Any],
-                       detail: dict[str, Any] | None = None) -> dict[str, Any]:
+                       detail: dict[str, Any] | None = None) -> Activity:
     provider_id = activity.get('activityId')
     if provider_id is None:
         raise ValueError('Garmin activity is missing activityId')
@@ -66,7 +68,7 @@ def normalize_activity(user_id: uuid.UUID, connection_id: uuid.UUID,
     }
 
 
-def normalize_segments(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def normalize_segments(payload: dict[str, Any]) -> list[ActivitySegment]:
     rows: list[dict[str, Any]] = []
     for kind, keys in (('lap', ('lapDTOs', 'laps')),
                        ('split', ('splitDTOs', 'splits'))):
@@ -107,10 +109,10 @@ class ActivitySyncWorker:
             logger.info('stale_sync_job_ignored', extra={'sync_job_id': job['id'],
                         'user_id': job['user_id']})
         except ConnectionError as error:
-            self._fail(job, error.code, retry=error.code in ('rate_limited', 'provider_unavailable'))
+            self._fail(job, error.code, retry=is_retryable(error.code))
         except Exception:
             logger.exception('sync_job_failed', extra={'sync_job_id': job['id'], 'user_id': job['user_id']})
-            self._fail(job, 'sync_failed', retry=True)
+            self._fail(job, SYNC_FAILED, retry=True)
         return True
 
     def _process(self, job: dict[str, Any]) -> None:

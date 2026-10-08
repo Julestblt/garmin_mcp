@@ -1,17 +1,7 @@
 from datetime import date, datetime, timezone
-from typing import Any, TypedDict
+from typing import Any
 
-
-class Observation(TypedDict):
-    domain: str
-    metric: str
-    observed_on: str
-    observed_at: str | None
-    value_numeric: int | float | None
-    value_text: str | None
-    unit: str | None
-    availability: str
-    source_updated_at: str | None
+from garmin_mcp.stride_models import Observation
 
 
 def _mapping(value: Any) -> dict[str, Any]:
