@@ -178,3 +178,17 @@ def test_widget_challenge_keeps_only_csrf_from_html():
     restored = FakeGarmin()
     restore_mfa(restored, state)
     assert restored.client._widget_last_resp.text == '<input name="_csrf" value="csrf-token">'
+
+
+def test_curl_mfa_session_cookies_survive_reconstruction():
+    from curl_cffi import requests as curl_requests
+
+    client = FakeGarmin()
+    client.client._mfa_session = curl_requests.Session(impersonate='safari_ios')
+    client.client._mfa_session.cookies.set('sso', 'session-secret', domain='sso.garmin.com')
+    state = capture_mfa(client)
+    assert state['session_type'] == 'curl'
+    assert state['impersonate'] == 'safari_ios'
+    restored = FakeGarmin()
+    restore_mfa(restored, state)
+    assert restored.client._mfa_session.cookies.get('sso') == 'session-secret'

@@ -66,8 +66,11 @@ def restore_mfa(client: Garmin, state: dict[str, Any]) -> None:
     else:
         session = requests.Session()
     for cookie in state['cookies']:
-        session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'],
-                            path=cookie['path'], secure=cookie['secure'], expires=cookie['expires'])
+        options = {'domain': cookie['domain'], 'path': cookie['path'],
+                   'secure': cookie['secure']}
+        if state['session_type'] != 'curl':
+            options['expires'] = cookie['expires']
+        session.cookies.set(cookie['name'], cookie['value'], **options)
     internal = client.client
     internal._mfa_session = session
     internal._mfa_flow = state['flow']
