@@ -27,18 +27,22 @@ jobs:
       run: uv python install ${{ matrix.python-version }}
 
     - name: Install dependencies
-      run: uv sync
+      run: uv sync --frozen
 
-    - name: Run integration tests
-      run: uv run pytest tests/integration tests/unit -v --tb=short
+    - name: Run unit and mocked integration tests
+      run: uv run --frozen pytest tests/integration tests/unit -q --strict-markers
       timeout-minutes: 5
 
-    - name: Test summary
-      if: always()
-      run: |
-        echo "Tests completed for Python ${{ matrix.python-version }}"
-        if [ $? -eq 0 ]; then
-          echo "✅ All tests passed"
-        else
-          echo "❌ Some tests failed"
-        fi
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: astral-sh/setup-uv@v5
+    - name: Verify lock file
+      run: uv lock --check
+    - name: Check Python syntax
+      run: uv run --frozen python -m compileall -q src/garmin_mcp
+    - name: Build package
+      run: uv build
+    - name: Build Docker image
+      run: docker build -t stride-garmin:ci .
