@@ -12,6 +12,7 @@ from garmin_mcp.stride_storage import FileTokenStore
 
 class FakeInternal:
     def __init__(self):
+        self.calls = []
         self.token = 'fresh-token'
         self._mfa_flow = 'ios'
         self._mfa_method = 'email'
@@ -38,6 +39,7 @@ class FakeInternal:
         self.token = 'refreshed-' + self.token
 
     def connectapi(self, path):
+        self.calls.append(path)
         if path == '/userprofile-service/socialProfile':
             return {'displayName': 'Runner', 'fullName': 'Runner'}
         return {'userData': {'measurementSystem': 'metric'}}
@@ -101,9 +103,19 @@ def test_successful_login_and_tenant_isolation(service):
     assert service.sessions.tokens.load(user_a) == 'fresh-token'
     with pytest.raises(ConnectionError, match='reconnect_required'):
         service.sessions.for_user(user_b)
-    service.sessions.for_user(user_a)
+    client = service.sessions.for_user(user_a)
+    assert client.client.calls == []
     assert service.sessions.tokens.load(user_a) == 'refreshed-fresh-token'
     assert service.sessions.tokens.load(user_b) is None
+
+
+def test_profile_is_loaded_only_when_requested(service):
+    user_id = uuid.uuid4()
+    service.start(user_id, 'a@example.com', 'password')
+    client = service.sessions.for_user(user_id, load_profile=True)
+    assert client.display_name == 'Runner'
+    assert client.unit_system == 'metric'
+    assert client.client.calls == ['/userprofile-service/socialProfile', '/settings']
 
 
 def test_mfa_continues_with_reconstructed_session(service):

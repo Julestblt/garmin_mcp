@@ -83,7 +83,7 @@ class FakeSessions:
     def __init__(self):
         self.users = []
 
-    def for_user(self, user_id):
+    def for_user(self, user_id, load_profile=False):
         self.users.append(user_id)
         return SimpleNamespace(get_stats=lambda _date: {'owner': str(user_id)})
 

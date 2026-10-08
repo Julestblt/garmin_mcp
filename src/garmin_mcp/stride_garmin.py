@@ -102,7 +102,7 @@ class GarminSessionProvider:
                                                       'reconnect_required', 'session_expired')
         raise ConnectionError('reconnect_required', 409)
 
-    def for_user(self, user_id: uuid.UUID) -> Garmin:
+    def for_user(self, user_id: uuid.UUID, load_profile: bool = False) -> Garmin:
         connection = self.connections.get(user_id) if self.connections else None
         if connection and connection['status'] != 'connected':
             raise ConnectionError('reconnect_required', 409)
@@ -121,11 +121,12 @@ class GarminSessionProvider:
         try:
             if internal.di_refresh_token and internal._token_expires_soon():
                 internal._refresh_session()
-            profile = internal.connectapi('/userprofile-service/socialProfile')
-            settings = internal.connectapi(client.garmin_connect_user_settings_url)
-            client.display_name = profile.get('displayName')
-            client.full_name = profile.get('fullName', '')
-            client.unit_system = settings.get('userData', {}).get('measurementSystem')
+            if load_profile:
+                profile = internal.connectapi('/userprofile-service/socialProfile')
+                settings = internal.connectapi(client.garmin_connect_user_settings_url)
+                client.display_name = profile.get('displayName')
+                client.full_name = profile.get('fullName', '')
+                client.unit_system = settings.get('userData', {}).get('measurementSystem')
         except Exception as error:
             if isinstance(error, GarminConnectAuthenticationError):
                 self._reconnect_required(connection)

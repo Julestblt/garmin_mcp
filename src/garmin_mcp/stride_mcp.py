@@ -12,6 +12,9 @@ DEFAULT_TOOLS = {
     'get_training_status', 'get_rhr_day', 'get_vo2max_trend',
 }
 
+PROFILE_METHODS = {'get_display_name', 'get_full_name', 'get_unit_system', 'get_heart_rates',
+                   'get_personal_record', 'get_sleep_data'}
+
 
 class UserScopedGarminProxy:
     def __init__(self, sessions: GarminSessionProvider, nested: bool = False):
@@ -36,7 +39,7 @@ class UserScopedGarminProxy:
             if access is None or access.subject is None:
                 raise PermissionError('authenticated_stride_user_required')
             user_id = uuid.UUID(access.subject)
-            client = self.sessions.for_user(user_id)
+            client = self.sessions.for_user(user_id, load_profile=name in PROFILE_METHODS)
             try:
                 target = client.client if self.nested else client
                 return getattr(target, name)(*args, **kwargs)
