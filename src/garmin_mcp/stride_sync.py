@@ -70,13 +70,15 @@ class ActivitySyncWorker:
                                   params={'on_conflict': 'user_id,provider,provider_activity_id'},
                                   data=rows[offset:offset + 100],
                                   prefer='resolution=merge-duplicates')
+        activity_count = self.database.request('POST', 'rpc/count_provider_activities',
+                                               data={'p_connection_id': str(connection_id)})
         finished = start == oldest
         now = datetime.now(timezone.utc).isoformat()
         update = {
             'state': 'succeeded' if finished else 'queued',
             'cursor_date': None if finished else (start - timedelta(days=1)).isoformat(),
             'oldest_synchronized_date': start.isoformat(),
-            'activity_count': job['activity_count'] + len(rows),
+            'activity_count': activity_count,
             'failure_count': 0,
             'lease_expires_at': None, 'updated_at': now,
             'next_attempt_at': (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat(),

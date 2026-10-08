@@ -21,6 +21,9 @@ class FakeDatabase:
                 key = (row['user_id'], row['provider'], row['provider_activity_id'])
                 self.activities[key] = row
             return None
+        if path == 'rpc/count_provider_activities':
+            return sum(row['connection_id'] == data['p_connection_id']
+                       for row in self.activities.values())
         if path == 'sync_jobs':
             self.job.update(data)
             return None
@@ -62,9 +65,27 @@ def test_activity_sync_is_newest_first_resumable_and_idempotent():
     assert worker.run_once()
     assert job['state'] == 'succeeded'
     assert job['cursor_date'] is None
+    assert job['activity_count'] == 1
     assert len(database.activities) == 1
     assert sessions.users == [user_id, user_id]
     assert not worker.run_once()
+
+
+def test_replayed_window_does_not_inflate_activity_count():
+    user_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    job = {'id': str(uuid.uuid4()), 'connection_id': str(connection_id),
+           'user_id': str(user_id), 'state': 'queued', 'cursor_date': '2026-01-07',
+           'oldest_date': '2026-01-01', 'activity_count': 0, 'attempts': 0,
+           'failure_count': 0}
+    database = FakeDatabase(job)
+    worker = ActivitySyncWorker(database, FakeSessions())
+    assert worker.run_once()
+    assert job['activity_count'] == 1
+    job.update(state='queued', cursor_date='2026-01-07')
+    assert worker.run_once()
+    assert job['activity_count'] == 1
+    assert len(database.activities) == 1
 
 
 def test_normalization_requires_stable_provider_id():
