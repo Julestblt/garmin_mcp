@@ -14,6 +14,10 @@ from garmin_mcp.stride_observations import normalize_fitness, normalize_recovery
 logger = logging.getLogger('garmin_mcp.stride.sync')
 
 
+class StaleSyncJob(Exception):
+    pass
+
+
 def _source_time(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -99,6 +103,9 @@ class ActivitySyncWorker:
         job = jobs[0]
         try:
             self._process(job)
+        except StaleSyncJob:
+            logger.info('stale_sync_job_ignored', extra={'sync_job_id': job['id'],
+                        'user_id': job['user_id']})
         except ConnectionError as error:
             self._fail(job, error.code, retry=error.code in ('rate_limited', 'provider_unavailable'))
         except Exception:
@@ -149,9 +156,10 @@ class ActivitySyncWorker:
         for activity, segments in rows:
             stored = self.database.request('POST', 'rpc/upsert_garmin_activity', data={
                 'p_connection_id': str(connection_id), 'p_user_id': str(user_id),
+                'p_job_id': job['id'], 'p_attempts': job['attempts'],
                 'p_activity': activity, 'p_segments': segments})
             if not stored:
-                raise ConnectionError('reconnect_required', 409)
+                raise StaleSyncJob
         activity_count = self.database.request('POST', 'rpc/count_provider_activities',
                                                data={'p_connection_id': str(connection_id)})
         finished = start == oldest
@@ -167,9 +175,12 @@ class ActivitySyncWorker:
         }
         if finished:
             update['last_success_at'] = now
-        self.database.request('PATCH', 'sync_jobs',
-                              params={'id': f"eq.{job['id']}", 'attempts': f"eq.{job['attempts']}"},
-                              data=update)
+        updated = self.database.request('PATCH', 'sync_jobs',
+                              params={'id': f"eq.{job['id']}", 'attempts': f"eq.{job['attempts']}",
+                                      'state': 'eq.running'},
+                              data=update, prefer='return=representation')
+        if not updated:
+            raise StaleSyncJob
         if finished:
             self.database.request('PATCH', 'provider_connections',
                                   params={'id': f"eq.{job['connection_id']}"},
@@ -200,20 +211,25 @@ class ActivitySyncWorker:
             self.sessions.persist(user_id, client)
         stored = self.database.request('POST', 'rpc/upsert_provider_observations', data={
             'p_connection_id': str(connection_id), 'p_user_id': str(user_id),
+            'p_job_id': job['id'], 'p_attempts': job['attempts'],
             'p_observations': rows})
         if not stored:
-            raise ConnectionError('reconnect_required', 409)
+            raise StaleSyncJob
         finished = day <= oldest
         now = datetime.now(timezone.utc).isoformat()
-        self.database.request('PATCH', 'sync_jobs',
-                              params={'id': f"eq.{job['id']}", 'attempts': f"eq.{job['attempts']}"},
+        updated = self.database.request('PATCH', 'sync_jobs',
+                              params={'id': f"eq.{job['id']}", 'attempts': f"eq.{job['attempts']}",
+                                      'state': 'eq.running'},
                               data={'state': 'succeeded' if finished else 'queued',
                                     'cursor_date': None if finished else (day - timedelta(days=1)).isoformat(),
                                     'oldest_synchronized_date': day.isoformat(),
                                     'failure_count': 0, 'lease_expires_at': None,
                                     'updated_at': now,
                                     'next_attempt_at': (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat(),
-                                    'last_success_at': now if finished else None})
+                                    'last_success_at': now if finished else None},
+                              prefer='return=representation')
+        if not updated:
+            raise StaleSyncJob
         if finished:
             self.database.request('PATCH', 'provider_connections',
                                   params={'id': f'eq.{connection_id}'},
@@ -227,7 +243,8 @@ class ActivitySyncWorker:
         backoff = min(3600, 30 * 2 ** min(failure_count, 7))
         state = 'queued' if retry and failure_count < 6 else 'failed'
         self.database.request('PATCH', 'sync_jobs',
-                              params={'id': f"eq.{job['id']}", 'attempts': f'eq.{attempts}'},
+                              params={'id': f"eq.{job['id']}", 'attempts': f'eq.{attempts}',
+                                      'state': 'eq.running'},
                               data={'state': state, 'last_error_code': code,
                                     'failure_count': failure_count,
                                     'next_attempt_at': (datetime.now(timezone.utc) + timedelta(seconds=backoff)).isoformat(),

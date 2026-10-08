@@ -8,6 +8,7 @@ class FakeDatabase:
     def __init__(self, job):
         self.job = job
         self.activities = {}
+        self.stale = False
 
     def request(self, method, path, *, params=None, data=None, prefer=None):
         if path == 'rpc/claim_sync_job':
@@ -17,6 +18,8 @@ class FakeDatabase:
             self.job['attempts'] += 1
             return [dict(self.job)]
         if path == 'rpc/upsert_garmin_activity':
+            if self.stale or data['p_attempts'] != self.job['attempts']:
+                return False
             row = data['p_activity']
             key = (row['user_id'], row['provider'], row['provider_activity_id'])
             self.activities[key] = row
@@ -30,8 +33,11 @@ class FakeDatabase:
             return sum(row['connection_id'] == data['p_connection_id']
                        for row in self.activities.values())
         if path == 'sync_jobs':
+            if (params.get('attempts') != f"eq.{self.job['attempts']}"
+                    or params.get('state') != 'eq.running'):
+                return []
             self.job.update(data)
-            return None
+            return [dict(self.job)] if prefer else None
         if path == 'provider_connections':
             return None
         raise AssertionError(path)
@@ -144,3 +150,18 @@ def test_activity_detail_and_segments_are_normalized_without_raw_payload():
                                    'splitDTOs': [{'averageHR': 151}]})
     assert [(item['segment_type'], item['segment_index']) for item in segments] == [
         ('lap', 0), ('split', 0)]
+
+
+def test_stale_worker_write_is_ignored_and_does_not_advance_cursor():
+    user_id = uuid.uuid4()
+    job = {'id': str(uuid.uuid4()), 'connection_id': str(uuid.uuid4()),
+           'user_id': str(user_id), 'state': 'queued',
+           'cursor_date': '2026-01-07', 'oldest_date': '2026-01-01',
+           'activity_count': 0, 'attempts': 0, 'failure_count': 0}
+    database = FakeDatabase(job)
+    database.stale = True
+    worker = ActivitySyncWorker(database, FakeSessions())
+    assert worker.run_once()
+    assert job['state'] == 'running'
+    assert job['cursor_date'] == '2026-01-07'
+    assert not database.activities

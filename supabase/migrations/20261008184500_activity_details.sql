@@ -42,7 +42,8 @@ grant select on public.provider_activity_segments to authenticated;
 grant all on public.provider_activity_segments to service_role;
 
 create function public.upsert_garmin_activity(
-  p_connection_id uuid, p_user_id uuid, p_activity jsonb, p_segments jsonb
+  p_connection_id uuid, p_user_id uuid, p_job_id uuid, p_attempts integer,
+  p_activity jsonb, p_segments jsonb
 )
 returns boolean
 language plpgsql security definer set search_path = public
@@ -53,6 +54,13 @@ begin
   perform 1 from public.provider_connections
   where id = p_connection_id and user_id = p_user_id
     and provider = 'garmin' and status = 'connected'
+  for update;
+  if not found then
+    return false;
+  end if;
+  perform 1 from public.sync_jobs
+  where id = p_job_id and connection_id = p_connection_id and user_id = p_user_id
+    and state = 'running' and attempts = p_attempts and lease_expires_at > now()
   for update;
   if not found then
     return false;
@@ -127,7 +135,7 @@ begin
   return true;
 end;
 $$;
-revoke all on function public.upsert_garmin_activity(uuid, uuid, jsonb, jsonb)
+revoke all on function public.upsert_garmin_activity(uuid, uuid, uuid, integer, jsonb, jsonb)
   from public, anon, authenticated;
-grant execute on function public.upsert_garmin_activity(uuid, uuid, jsonb, jsonb)
+grant execute on function public.upsert_garmin_activity(uuid, uuid, uuid, integer, jsonb, jsonb)
   to service_role;

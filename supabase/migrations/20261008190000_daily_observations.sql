@@ -122,7 +122,8 @@ where connection.provider = 'garmin' and connection.status = 'connected'
   );
 
 create function public.upsert_provider_observations(
-  p_connection_id uuid, p_user_id uuid, p_observations jsonb
+  p_connection_id uuid, p_user_id uuid, p_job_id uuid, p_attempts integer,
+  p_observations jsonb
 )
 returns boolean
 language plpgsql security definer set search_path = public
@@ -132,6 +133,13 @@ begin
   perform 1 from public.provider_connections
   where id = p_connection_id and user_id = p_user_id
     and provider = 'garmin' and status = 'connected'
+  for update;
+  if not found then
+    return false;
+  end if;
+  perform 1 from public.sync_jobs
+  where id = p_job_id and connection_id = p_connection_id and user_id = p_user_id
+    and state = 'running' and attempts = p_attempts and lease_expires_at > now()
   for update;
   if not found then
     return false;
@@ -163,7 +171,7 @@ begin
   return true;
 end;
 $$;
-revoke all on function public.upsert_provider_observations(uuid, uuid, jsonb)
+revoke all on function public.upsert_provider_observations(uuid, uuid, uuid, integer, jsonb)
   from public, anon, authenticated;
-grant execute on function public.upsert_provider_observations(uuid, uuid, jsonb)
+grant execute on function public.upsert_provider_observations(uuid, uuid, uuid, integer, jsonb)
   to service_role;

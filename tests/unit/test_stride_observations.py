@@ -55,7 +55,7 @@ def test_recovery_worker_resumes_from_persisted_day_cursor():
         def __init__(self):
             self.observations = {}
 
-        def request(self, method, path, *, data=None, params=None):
+        def request(self, method, path, *, data=None, params=None, prefer=None):
             if path == 'rpc/claim_sync_job':
                 if job['state'] != 'queued':
                     return []
@@ -63,12 +63,17 @@ def test_recovery_worker_resumes_from_persisted_day_cursor():
                 job['attempts'] += 1
                 return [dict(job)]
             if path == 'rpc/upsert_provider_observations':
+                if data['p_attempts'] != job['attempts']:
+                    return False
                 for row in data['p_observations']:
                     self.observations[(row['metric'], row['observed_on'])] = row
                 return True
             if path == 'sync_jobs':
+                if (params.get('attempts') != f"eq.{job['attempts']}"
+                        or params.get('state') != 'eq.running'):
+                    return []
                 job.update(data)
-                return None
+                return [dict(job)] if prefer else None
             if path == 'provider_connections':
                 return None
             raise AssertionError(path)
