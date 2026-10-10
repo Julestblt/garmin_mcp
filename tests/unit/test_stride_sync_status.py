@@ -25,6 +25,7 @@ def test_category_states_reflect_persisted_jobs():
             if path == 'sync_jobs':
                 assert params['connection_id'] == f'eq.{connection_id}'
                 if params['mode'] == 'eq.incremental':
+                    assert params['phase'] == 'in.(activities,recovery,fitness)'
                     return []
                 assert params['mode'] == 'eq.historical'
                 phase = params['phase'][3:]

@@ -1,23 +1,58 @@
 import logging
+import math
+import os
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from garmin_mcp.stride_app import create_stride_components
-from garmin_mcp.stride_errors import SYNC_FAILED, is_retryable
+from garminconnect import GarminConnectAuthenticationError, GarminConnectTooManyRequestsError
+
+from garmin_mcp.stride_errors import PROVIDER_UNAVAILABLE, SYNC_FAILED, is_retryable
 from garmin_mcp.stride_garmin import ConnectionError, GarminSessionProvider
 from garmin_mcp.stride_storage import SupabaseDatabase
 from garmin_mcp.stride_logging import configure_logging
 from garmin_mcp.stride_models import Activity, ActivitySegment
 from garmin_mcp.stride_observations import normalize_fitness, normalize_recovery
+from garmin_mcp.stride_tracks import (GARMIN_MAX_CHART_SIZE, GARMIN_MAX_POLYLINE_SIZE,
+                                      normalize_track, unavailable_track)
 
 
 logger = logging.getLogger('garmin_mcp.stride.sync')
 
 
+TRACK_BATCH_SIZE = 5
+TRACK_BATCH_SPACING_SECONDS = 5
+DEFAULT_TRACK_HISTORY_DAYS = 90
+MAX_TRACK_HISTORY_DAYS = 3650
+
+
+def track_history_days() -> int:
+    try:
+        days = int(os.getenv('STRIDE_TRACK_HISTORY_DAYS', str(DEFAULT_TRACK_HISTORY_DAYS)))
+    except ValueError:
+        return DEFAULT_TRACK_HISTORY_DAYS
+    return min(max(days, 1), MAX_TRACK_HISTORY_DAYS)
+
+
 class StaleSyncJob(Exception):
     pass
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _positive(value: Any) -> float | None:
+    number = _number(value)
+    return number if number is not None and number > 0 else None
+
+
+def _text(value: Any) -> str | None:
+    return value.strip() or None if isinstance(value, str) else None
 
 
 def _source_time(value: str | None) -> datetime | None:
@@ -34,6 +69,8 @@ def normalize_activity(user_id: uuid.UUID, connection_id: uuid.UUID,
     if provider_id is None:
         raise ValueError('Garmin activity is missing activityId')
     detail = detail or {}
+    summary = detail.get('summaryDTO') if isinstance(detail.get('summaryDTO'), dict) else {}
+    rpe = _positive(summary.get('directWorkoutRpe', activity.get('directWorkoutRpe')))
     activity_type = detail.get('activityType') or activity.get('activityType') or {}
     started_at = activity.get('startTimeGMT')
     if isinstance(started_at, str) and started_at and not started_at.endswith(('Z', '+00:00')):
@@ -64,6 +101,11 @@ def normalize_activity(user_id: uuid.UUID, connection_id: uuid.UUID,
                                                  activity.get('anaerobicTrainingEffect')),
         'route_name': detail.get('courseName', activity.get('courseName')),
         'has_route': detail.get('hasPolyline', activity.get('hasPolyline')),
+        'activity_name': _text(activity.get('activityName')) or _text(detail.get('activityName')),
+        'calories': _positive(summary.get('calories', activity.get('calories'))),
+        'workout_rpe': round(rpe / 10, 1) if rpe is not None else None,
+        'workout_feel': _positive(summary.get('directWorkoutFeel',
+                                              activity.get('directWorkoutFeel'))),
         'source_updated_at': updated_at,
     }
 
@@ -128,6 +170,9 @@ class ActivitySyncWorker:
     def _process(self, job: dict[str, Any]) -> None:
         if job.get('phase') in ('recovery', 'fitness'):
             self._process_observations(job)
+            return
+        if job.get('phase') == 'tracks':
+            self._process_tracks(job)
             return
         user_id = uuid.UUID(job['user_id'])
         connection_id = uuid.UUID(job['connection_id'])
@@ -199,6 +244,68 @@ class ActivitySyncWorker:
                                   data={'last_sync_at': now})
         logger.info('sync_chunk_completed', extra={'sync_job_id': job['id'],
                     'user_id': str(user_id), 'activity_count': len(rows)})
+
+    def _process_tracks(self, job: dict[str, Any]) -> None:
+        user_id = uuid.UUID(job['user_id'])
+        connection_id = uuid.UUID(job['connection_id'])
+        since = datetime.now(timezone.utc) - timedelta(days=track_history_days())
+        pending = self.database.request('POST', 'rpc/list_activities_missing_tracks', data={
+            'p_connection_id': str(connection_id), 'p_since': since.isoformat(),
+            'p_limit': TRACK_BATCH_SIZE}) or []
+        tracks: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+        if pending:
+            client = self.sessions.for_user(user_id)
+            try:
+                for item in pending:
+                    try:
+                        details = client.get_activity_details(
+                            item['provider_activity_id'], maxchart=GARMIN_MAX_CHART_SIZE,
+                            maxpoly=GARMIN_MAX_POLYLINE_SIZE)
+                    except (GarminConnectTooManyRequestsError,
+                            GarminConnectAuthenticationError):
+                        raise
+                    except Exception:
+                        logger.warning('activity_track_unavailable', extra={
+                            'sync_job_id': job['id'], 'user_id': str(user_id),
+                            'provider_activity_id': item['provider_activity_id']})
+                        tracks.append((item, None))
+                        continue
+                    tracks.append((item, normalize_track(details)))
+            finally:
+                self.sessions.persist(user_id, client)
+            failed = sum(track is None for _, track in tracks)
+            if failed >= 3 and failed == len(tracks):
+                raise ConnectionError(PROVIDER_UNAVAILABLE, 503)
+        for item, track in tracks:
+            stored = self.database.request('POST', 'rpc/upsert_activity_track', data={
+                'p_connection_id': str(connection_id), 'p_user_id': str(user_id),
+                'p_job_id': job['id'], 'p_attempts': job['attempts'],
+                'p_activity_id': item['id'],
+                'p_track': track if track is not None else unavailable_track()})
+            if not stored:
+                raise StaleSyncJob
+        finished = len(pending) < TRACK_BATCH_SIZE
+        now = datetime.now(timezone.utc)
+        update = {
+            'state': 'succeeded' if finished else 'queued',
+            'failure_count': 0, 'last_error_code': None,
+            'lease_expires_at': None, 'updated_at': now.isoformat(),
+            'next_attempt_at': (now + timedelta(
+                seconds=TRACK_BATCH_SPACING_SECONDS)).isoformat(),
+        }
+        if finished:
+            update['last_success_at'] = now.isoformat()
+        updated = self.database.request('PATCH', 'sync_jobs',
+                                        params={'id': f"eq.{job['id']}",
+                                                'attempts': f"eq.{job['attempts']}",
+                                                'state': 'eq.running'},
+                                        data=update, prefer='return=representation')
+        if not updated:
+            raise StaleSyncJob
+        logger.info('track_chunk_completed', extra={
+            'sync_job_id': job['id'], 'user_id': str(user_id), 'track_count': len(tracks),
+            'unavailable_count': sum(track is None or track['status'] == 'unavailable'
+                                     for _, track in tracks)})
 
     def _process_observations(self, job: dict[str, Any]) -> None:
         user_id = uuid.UUID(job['user_id'])

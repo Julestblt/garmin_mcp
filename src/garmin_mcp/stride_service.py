@@ -105,6 +105,7 @@ class ConnectionRepository:
         categories['patterns'] = {'state': patterns_state}
         recent = self.database.request('GET', 'sync_jobs', params={
             'connection_id': f"eq.{connection['id']}", 'mode': 'eq.incremental',
+            'phase': 'in.(activities,recovery,fitness)',
             'select': 'state,phase,last_error_code,last_success_at,updated_at',
             'order': 'created_at.desc', 'limit': '1'})
         return {'connection_id': connection['id'], 'categories': categories,
