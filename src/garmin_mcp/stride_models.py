@@ -55,6 +55,10 @@ class Activity(TypedDict):
     anaerobic_training_effect: Any
     route_name: str | None
     has_route: bool | None
+    activity_name: str | None
+    calories: Any
+    workout_rpe: Any
+    workout_feel: Any
     source_updated_at: str | None
 
 

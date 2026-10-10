@@ -16,5 +16,6 @@ Normalized contracts live in `stride_models`, and provider failures are mapped t
 - Historical activity import does not stop after a long run of empty windows, because a gap is not proof that older history is absent. Bound work with a per-connection `history_start_date`.
 - Garmin MFA continuation relies on private `garminconnect` fields. Upgrade that library only alongside the compatibility tests.
 - Fernet key rotation needs a planned re-encryption pass; replacing `GARMIN_TOKEN_ENCRYPTION_KEY` without migrating stored sessions makes them unreadable.
+- Activity tracks are parsed defensively from Garmin Connect's activity-details format and covered by synthetic payloads. The metric keys for cadence and power in particular should be confirmed against a real account before Stride depends on those series.
 - There is no aggregate metrics endpoint. Observability is structured stderr logs (see `docs/deployment.md`).
 - The API exposes read-only Garmin data and lifecycle operations. It is deliberately not a generic REST wrapper over every MCP tool.
