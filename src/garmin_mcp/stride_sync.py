@@ -40,6 +40,11 @@ class StaleSyncJob(Exception):
     pass
 
 
+def track_payload(track: dict[str, Any]) -> dict[str, Any]:
+    """Drop null values so PostgreSQL receives missing keys, not JSON null."""
+    return {key: value for key, value in track.items() if value is not None}
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -281,7 +286,7 @@ class ActivitySyncWorker:
                 'p_connection_id': str(connection_id), 'p_user_id': str(user_id),
                 'p_job_id': job['id'], 'p_attempts': job['attempts'],
                 'p_activity_id': item['id'],
-                'p_track': track if track is not None else unavailable_track()})
+                'p_track': track_payload(track if track is not None else unavailable_track())})
             if not stored:
                 raise StaleSyncJob
         finished = len(pending) < TRACK_BATCH_SIZE

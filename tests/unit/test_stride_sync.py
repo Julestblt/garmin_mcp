@@ -209,6 +209,7 @@ class TrackDatabase:
         if path == 'rpc/upsert_activity_track':
             if self.stale:
                 return False
+            assert None not in data['p_track'].values()
             self.tracks[data['p_activity_id']] = data['p_track']
             return True
         if path == 'sync_jobs':
@@ -221,9 +222,10 @@ class TrackDatabase:
 
 
 class TrackSessions:
-    def __init__(self, failures=()):
+    def __init__(self, failures=(), indoor=()):
         self.requests = []
         self.failures = failures
+        self.indoor = indoor
 
     def for_user(self, _user_id):
         return self
@@ -321,3 +323,19 @@ def test_track_window_is_configurable_and_bounded(monkeypatch):
     assert track_history_days() == 3650
     monkeypatch.setenv('STRIDE_TRACK_HISTORY_DAYS', 'soon')
     assert track_history_days() == 90
+
+
+def test_activities_without_gps_are_sent_without_null_route_values():
+    job = track_job()
+    database = TrackDatabase(job, activities(2))
+    sessions = TrackSessions({'1001': RuntimeError('not found')})
+    worker = ActivitySyncWorker(database, sessions)
+    assert worker.run_once()
+    available = database.tracks['activity-0']
+    assert available['status'] == 'available'
+    assert 'route' not in available and 'bounds' not in available
+    assert available['series'] and available['heart_rate_histogram']
+    unavailable = database.tracks['activity-1']
+    assert unavailable['status'] == 'unavailable'
+    assert set(unavailable) == {'status', 'route_point_count', 'series_point_count',
+                                'source_point_count'}
