@@ -14,6 +14,19 @@ def _first_mapping(value: Any) -> dict[str, Any]:
     return _mapping(value)
 
 
+def _resting_heart_rate(day: date, response: Any) -> Any:
+    root = _mapping(response)
+    if root.get('restingHeartRate') is not None:
+        return root['restingHeartRate']
+    metrics = _mapping(_mapping(root.get('allMetrics')).get('metricsMap'))
+    rows = metrics.get('WELLNESS_RESTING_HEART_RATE')
+    if not isinstance(rows, list):
+        return None
+    return next((row.get('value') for row in rows
+                 if isinstance(row, dict) and row.get('calendarDate') == day.isoformat()
+                 and row.get('value') is not None), None)
+
+
 def _timestamp(value: Any) -> str | None:
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat()
@@ -67,7 +80,7 @@ def normalize_recovery(day: date, sleep: Any, hrv: Any, rhr: Any,
          _timestamp(hrv_summary.get('createTimeStamp'))),
         ('hrv_status', hrv_summary.get('status'), None, None,
          _timestamp(hrv_summary.get('createTimeStamp'))),
-        ('resting_heart_rate_bpm', _mapping(rhr).get('restingHeartRate'), 'bpm', None, None),
+        ('resting_heart_rate_bpm', _resting_heart_rate(day, rhr), 'bpm', None, None),
         ('average_stress', _mapping(stress).get('avgStressLevel'), 'score', None, None),
         ('body_battery_latest', battery_day.get('bodyBatteryMostRecentValue'), 'score',
          _timestamp(battery_day.get('endTimestampGMT')), None),
