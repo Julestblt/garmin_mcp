@@ -22,4 +22,9 @@ for migration in $(LC_ALL=C ls "$migrations_dir"/*.sql | sort); do
   "${psql_base[@]}" -f "$migration"
 done
 
+for smoke in $(LC_ALL=C ls "$repo_root"/supabase/tests/*_smoke.sql 2>/dev/null | sort); do
+  echo "Running smoke test: $(basename "$smoke")"
+  "${psql_base[@]}" -f "$smoke"
+done
+
 echo "All migrations applied successfully."
