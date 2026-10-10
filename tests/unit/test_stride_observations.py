@@ -1,8 +1,55 @@
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from garmin_mcp.stride_observations import normalize_fitness, normalize_recovery
 from garmin_mcp.stride_sync import ActivitySyncWorker
+
+
+@pytest.mark.parametrize('value', [0, 49, 52.5])
+def test_recovery_reads_resting_hr_from_wellness_metrics_for_requested_day(value):
+    day = date(2024, 1, 15)
+    response = {'allMetrics': {'metricsMap': {'WELLNESS_RESTING_HEART_RATE': [
+        {'calendarDate': '2024-01-14', 'value': 99},
+        {'calendarDate': day.isoformat(), 'value': value},
+        {'calendarDate': '2024-01-16', 'value': 88},
+    ]}}}
+    rows = normalize_recovery(day, None, None, response, None, None, None)
+    resting = next(row for row in rows if row['metric'] == 'resting_heart_rate_bpm')
+    assert resting['value_numeric'] == value
+    assert resting['value_text'] is None
+    assert resting['observed_on'] == day.isoformat()
+    assert resting['unit'] == 'bpm'
+    assert resting['availability'] == 'available'
+
+
+@pytest.mark.parametrize('response', [
+    None, {}, {'allMetrics': None},
+    {'allMetrics': {'metricsMap': {'WELLNESS_RESTING_HEART_RATE': None}}},
+    {'allMetrics': {'metricsMap': {'WELLNESS_RESTING_HEART_RATE': {}}}},
+    {'allMetrics': {'metricsMap': {'WELLNESS_RESTING_HEART_RATE': [
+        None, 'invalid', {'calendarDate': '2024-01-14', 'value': 55},
+        {'calendarDate': '2024-01-15', 'value': None},
+    ]}}},
+])
+def test_recovery_keeps_missing_resting_hr_when_no_matching_metric(response):
+    rows = normalize_recovery(date(2024, 1, 15), None, None, response, None, None, None)
+    resting = next(row for row in rows if row['metric'] == 'resting_heart_rate_bpm')
+    assert resting['value_numeric'] is None
+    assert resting['value_text'] is None
+    assert resting['availability'] == 'missing'
+
+
+def test_recovery_marks_current_day_resting_hr_as_partial():
+    day = datetime.now(timezone.utc).date()
+    response = {'allMetrics': {'metricsMap': {'WELLNESS_RESTING_HEART_RATE': [
+        {'calendarDate': day.isoformat(), 'value': 51},
+    ]}}}
+    rows = normalize_recovery(day, None, None, response, None, None, None)
+    resting = next(row for row in rows if row['metric'] == 'resting_heart_rate_bpm')
+    assert resting['value_numeric'] == 51
+    assert resting['availability'] == 'partial'
 
 
 def test_recovery_keeps_zero_distinct_from_missing_and_partial():
