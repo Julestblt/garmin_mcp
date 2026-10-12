@@ -55,8 +55,11 @@ def _observation(day: date, domain: str, metric: str, value: Any,
 
 
 def normalize_recovery(day: date, sleep: Any, hrv: Any, rhr: Any,
-                       stress: Any, battery: Any, readiness: Any) -> list[Observation]:
+                       stress: Any, battery: Any, readiness: Any,
+                       summary: Any = None) -> list[Observation]:
     sleep_day = _mapping(_mapping(sleep).get('dailySleepDTO'))
+    spo2 = _mapping(_mapping(sleep).get('wellnessSpO2SleepSummaryDTO'))
+    stats = _mapping(summary)
     scores = _mapping(sleep_day.get('sleepScores'))
     hrv_summary = _mapping(_mapping(hrv).get('hrvSummary'))
     battery_day = _first_mapping(battery)
@@ -82,8 +85,20 @@ def normalize_recovery(day: date, sleep: Any, hrv: Any, rhr: Any,
          _timestamp(hrv_summary.get('createTimeStamp'))),
         ('resting_heart_rate_bpm', _resting_heart_rate(day, rhr), 'bpm', None, None),
         ('average_stress', _mapping(stress).get('avgStressLevel'), 'score', None, None),
-        ('body_battery_latest', battery_day.get('bodyBatteryMostRecentValue'), 'score',
+        ('body_battery_latest', stats.get('bodyBatteryMostRecentValue',
+                                          battery_day.get('bodyBatteryMostRecentValue')), 'score',
          _timestamp(battery_day.get('endTimestampGMT')), None),
+        ('body_battery_wake', stats.get('bodyBatteryAtWakeTime'), 'score', None, None),
+        ('body_battery_charged', stats.get('bodyBatteryChargedValue',
+                                           battery_day.get('charged')), 'score', None, None),
+        ('body_battery_drained', stats.get('bodyBatteryDrainedValue',
+                                           battery_day.get('drained')), 'score', None, None),
+        ('steps', stats.get('totalSteps'), 'steps', None, None),
+        ('steps_goal', stats.get('dailyStepGoal'), 'steps', None, None),
+        ('sleep_respiration_average', sleep_day.get('averageRespirationValue'),
+         'breaths/min', started, updated),
+        ('sleep_spo2_average', spo2.get('averageSpo2', sleep_day.get('averageSpO2Value')),
+         'percent', started, updated),
         ('training_readiness', readiness_day.get('score',
                                                 readiness_day.get('trainingReadinessLevel')),
          'score', None, None),

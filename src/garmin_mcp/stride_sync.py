@@ -326,7 +326,8 @@ class ActivitySyncWorker:
                     client.get_rhr_day(day.isoformat()),
                     client.get_stress_data(day.isoformat()),
                     client.get_body_battery(day.isoformat()),
-                    client.get_training_readiness(day.isoformat()))
+                    client.get_training_readiness(day.isoformat()),
+                    client.get_user_summary(day.isoformat()))
             else:
                 rows = normalize_fitness(
                     day, client.get_training_status(day.isoformat()),
