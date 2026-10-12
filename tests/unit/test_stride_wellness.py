@@ -10,11 +10,16 @@ from starlette.testclient import TestClient
 
 from garmin_mcp.stride_app import register_routes
 from garmin_mcp.stride_garmin import ConnectionError
-from garmin_mcp.stride_wellness import WellnessDayService, normalize_day
+from garmin_mcp.stride_wellness import WellnessDayService, _epoch_ms, normalize_day
 
 
 START = int(datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc).timestamp() * 1000)
 MINUTE = 60_000
+
+
+def test_epoch_ms_accepts_short_fraction_with_timezone():
+    assert _epoch_ms('2024-01-15T23:00:00.0+01:00') == START
+    assert _epoch_ms('2024-01-15T22:00:00.0Z') == START
 
 
 def day_payloads():
@@ -94,11 +99,14 @@ def test_day_reads_body_battery_from_daily_report_when_stress_has_none():
 
 
 class FakeClient:
-    def __init__(self, calls):
+    def __init__(self, calls, display_name):
         self.calls = calls
+        self.display_name = display_name
 
     def __getattr__(self, name):
         def call(day):
+            if name == 'get_heart_rates':
+                assert self.display_name, 'Garmin requires a display name for heart rates'
             self.calls.append((name, day))
             return None
         return call
@@ -110,7 +118,7 @@ class FakeSessions:
         self.persisted = 0
 
     def for_user(self, user_id, load_profile=False):
-        return FakeClient(self.calls)
+        return FakeClient(self.calls, 'Runner' if load_profile else None)
 
     def persist(self, user_id, client):
         self.persisted += 1
