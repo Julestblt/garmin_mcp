@@ -151,10 +151,42 @@ def test_recovery_worker_resumes_from_persisted_day_cursor():
         def get_training_readiness(self, _day):
             return []
 
+        def get_user_summary(self, _day):
+            return {}
+
     database = Database()
     worker = ActivitySyncWorker(database, Sessions())
     assert worker.run_once()
     assert job['cursor_date'] == '2024-01-14'
     assert worker.run_once()
     assert job['state'] == 'succeeded'
-    assert len(database.observations) == 28
+    assert len(database.observations) == 42
+
+
+def test_recovery_reads_body_battery_steps_and_breathing_from_daily_summary():
+    rows = normalize_recovery(
+        date(2024, 1, 15),
+        {'dailySleepDTO': {'averageRespirationValue': 14.2},
+         'wellnessSpO2SleepSummaryDTO': {'averageSpo2': 95}},
+        None, None, None, [{'charged': 20, 'drained': 30}], None,
+        {'bodyBatteryMostRecentValue': 44, 'bodyBatteryAtWakeTime': 61,
+         'bodyBatteryChargedValue': 38, 'bodyBatteryDrainedValue': 51,
+         'totalSteps': 6050, 'dailyStepGoal': 8000})
+    values = {row['metric']: row['value_numeric'] for row in rows}
+    assert values['body_battery_latest'] == 44
+    assert values['body_battery_wake'] == 61
+    assert values['body_battery_charged'] == 38
+    assert values['body_battery_drained'] == 51
+    assert values['steps'] == 6050
+    assert values['steps_goal'] == 8000
+    assert values['sleep_respiration_average'] == 14.2
+    assert values['sleep_spo2_average'] == 95
+
+
+def test_recovery_falls_back_to_body_battery_day_without_summary():
+    rows = normalize_recovery(date(2024, 1, 15), None, None, None, None,
+                              [{'charged': 20, 'drained': 30}], None)
+    values = {row['metric']: row for row in rows}
+    assert values['body_battery_charged']['value_numeric'] == 20
+    assert values['body_battery_drained']['value_numeric'] == 30
+    assert values['steps']['availability'] == 'missing'

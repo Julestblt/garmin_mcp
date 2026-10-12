@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import anyio
@@ -13,6 +14,7 @@ from starlette.responses import JSONResponse, Response
 from garmin_mcp.stride_garmin import ConnectionError, GarminConnectionService, GarminSessionProvider
 from garmin_mcp.stride_service import ConnectionRepository, StrideConnectionService, SupabaseTokenVerifier
 from garmin_mcp.stride_storage import EncryptedSupabaseTokenStore, SupabaseChallengeStore, SupabaseDatabase
+from garmin_mcp.stride_wellness import WellnessDayService
 
 
 logger = logging.getLogger('garmin_mcp.stride')
@@ -25,6 +27,7 @@ class StrideComponents:
     sessions: GarminSessionProvider
     verifier: SupabaseTokenVerifier
     service: StrideConnectionService
+    wellness: WellnessDayService
 
 
 def create_stride_components() -> StrideComponents:
@@ -37,7 +40,8 @@ def create_stride_components() -> StrideComponents:
     sessions = GarminSessionProvider(tokens, connections=connections)
     challenges = SupabaseChallengeStore(database, encryption_key)
     service = StrideConnectionService(GarminConnectionService(sessions, challenges), connections)
-    return StrideComponents(url, database, sessions, SupabaseTokenVerifier(url, key), service)
+    return StrideComponents(url, database, sessions, SupabaseTokenVerifier(url, key), service,
+                            WellnessDayService(sessions))
 
 
 def _identity() -> uuid.UUID | None:
@@ -211,3 +215,28 @@ def register_routes(app: Any, components: StrideComponents) -> None:
         except Exception:
             logger.exception('sync_lookup_failed', extra={'request_id': request_id, 'user_id': str(user_id)})
             return _error('storage_unavailable', 503)
+
+    @app.custom_route('/v1/wellness/days/{day}', methods=['GET'])
+    async def get_wellness_day(request: Request) -> Response:
+        user_id = _identity()
+        request_id = _request_id(request)
+        if user_id is None:
+            return _error('unauthorized', 401)
+        try:
+            day = date.fromisoformat(request.path_params['day'])
+        except (KeyError, ValueError):
+            return _error('invalid_request', 400)
+        today = datetime.now(timezone.utc).date()
+        if day > today + timedelta(days=1) or day < today - timedelta(days=730):
+            return _error('invalid_request', 400)
+        try:
+            result = await anyio.to_thread.run_sync(components.wellness.get, user_id, day)
+            return _json(result)
+        except ConnectionError as error:
+            logger.warning('wellness_day_failed', extra={'request_id': request_id,
+                           'user_id': str(user_id), 'error_code': error.code})
+            return _error(error.code, error.status)
+        except Exception:
+            logger.exception('wellness_day_unavailable', extra={'request_id': request_id,
+                             'user_id': str(user_id)})
+            return _error('provider_unavailable', 503)

@@ -32,3 +32,18 @@ A track stores, in `provider_activity_tracks` with owner-only read access and ca
 A track is typically 10-15 KB of JSON. The sync status endpoint and its categories ignore `tracks` jobs, so onboarding progress and the `incremental` summary are unchanged.
 
 Applying the enrichment migration also queues one incremental activity job per connected connection covering the last 90 days, so names, perceived effort and calories are filled for recent history without a full re-import.
+
+## Daily summary and intraday wellness
+
+Each recovery day also reads Garmin's daily user summary. It adds `body_battery_wake`, `body_battery_charged`, `body_battery_drained`, `steps`, `steps_goal`, `sleep_respiration_average` and `sleep_spo2_average`, and `body_battery_latest` now comes from the summary's most recent value. The Body Battery daily report remains a fallback for charged and drained values. Incremental recovery jobs fill these metrics for the last seven days; older days require replaying the recovery import.
+
+`GET /v1/wellness/days/{YYYY-MM-DD}` returns one day's intraday wellness for the authenticated user, fetched from Garmin on demand and never stored. It accepts dates up to one day ahead and two years back. The response contains:
+
+- `sleep`: start and end (epoch milliseconds), Garmin sleep phases (`deep`, `light`, `rem`, `awake`), phase durations, awakenings, score, average respiration, average and lowest SpO2, and overnight HRV, or `null`.
+- `heart_rate`: `[epoch_ms, bpm]` averaged per two minutes; gaps are `null`.
+- `stress`: `[epoch_ms, score]` averaged per three minutes; Garmin's negative codes (activity, unmeasured) become `null`.
+- `body_battery`: `[epoch_ms, level]` as reported.
+- `steps`: `[epoch_ms, steps]` totals per hour.
+- `summary`: resting heart rate, total and goal steps, average and maximum stress, and Body Battery at wake-up, charged, drained, highest, lowest and latest.
+
+The endpoint uses the same session lease as the worker. Results are cached in memory per user and day for five minutes for the current day and six hours for past days. Errors use the shared codes (`unauthorized`, `invalid_request`, `reconnect_required`, `rate_limited`, `provider_unavailable`).
