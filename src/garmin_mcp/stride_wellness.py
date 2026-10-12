@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 import time
 import uuid
@@ -32,7 +33,11 @@ def _epoch_ms(value: Any) -> int | None:
         return int(value)
     if isinstance(value, str) and value:
         try:
-            parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            timestamp = value.replace('Z', '+00:00')
+            timestamp = re.sub(
+                r'(?<=\d)\.(\d{1,5})(?=(?:[+-]\d{2}:\d{2})?$)',
+                lambda match: '.' + match.group(1).ljust(6, '0'), timestamp)
+            parsed = datetime.fromisoformat(timestamp)
         except ValueError:
             return None
         if parsed.tzinfo is None:

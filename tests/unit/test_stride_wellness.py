@@ -10,11 +10,16 @@ from starlette.testclient import TestClient
 
 from garmin_mcp.stride_app import register_routes
 from garmin_mcp.stride_garmin import ConnectionError
-from garmin_mcp.stride_wellness import WellnessDayService, normalize_day
+from garmin_mcp.stride_wellness import WellnessDayService, _epoch_ms, normalize_day
 
 
 START = int(datetime(2024, 1, 15, 22, 0, tzinfo=timezone.utc).timestamp() * 1000)
 MINUTE = 60_000
+
+
+def test_epoch_ms_accepts_short_fraction_with_timezone():
+    assert _epoch_ms('2024-01-15T23:00:00.0+01:00') == START
+    assert _epoch_ms('2024-01-15T22:00:00.0Z') == START
 
 
 def day_payloads():
