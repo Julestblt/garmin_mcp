@@ -94,11 +94,14 @@ def test_day_reads_body_battery_from_daily_report_when_stress_has_none():
 
 
 class FakeClient:
-    def __init__(self, calls):
+    def __init__(self, calls, display_name):
         self.calls = calls
+        self.display_name = display_name
 
     def __getattr__(self, name):
         def call(day):
+            if name == 'get_heart_rates':
+                assert self.display_name, 'Garmin requires a display name for heart rates'
             self.calls.append((name, day))
             return None
         return call
@@ -110,7 +113,7 @@ class FakeSessions:
         self.persisted = 0
 
     def for_user(self, user_id, load_profile=False):
-        return FakeClient(self.calls)
+        return FakeClient(self.calls, 'Runner' if load_profile else None)
 
     def persist(self, user_id, client):
         self.persisted += 1

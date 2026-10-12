@@ -182,7 +182,7 @@ class WellnessDayService:
             if cached and cached[0] > now:
                 self._cache.move_to_end(key)
                 return cached[1]
-        client = self.sessions.for_user(user_id)
+        client = self.sessions.for_user(user_id, load_profile=True)
         value = day.isoformat()
         try:
             payload = normalize_day(
