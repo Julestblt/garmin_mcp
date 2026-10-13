@@ -8,7 +8,7 @@ LOG_FIELDS = (
     'request_id', 'user_id', 'connection_id', 'sync_job_id', 'error_code',
     'phase', 'mode', 'state', 'status', 'activity_count', 'observation_count',
     'job_count', 'duration_ms', 'attempts', 'failure_count', 'rows_imported',
-    'retry', 'queue_depth', 'tool_name',
+    'retry', 'queue_depth', 'tool_name', 'source', 'unavailable_sources',
 )
 
 

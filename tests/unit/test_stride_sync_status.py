@@ -14,6 +14,8 @@ def test_category_states_reflect_persisted_jobs():
                      'activity_count': 0},
         'fitness': {'state': 'succeeded', 'oldest_synchronized_date': '2024-01-01',
                     'activity_count': 0},
+        'thresholds': {'state': 'failed', 'oldest_synchronized_date': None,
+                       'activity_count': 0},
     }
 
     class Database:
@@ -44,6 +46,8 @@ def test_category_states_reflect_persisted_jobs():
     assert result['categories']['activities']['activity_count'] == 3
     assert result['categories']['recovery']['state'] == 'running'
     assert result['categories']['fitness']['state'] == 'complete'
+    assert result['categories']['thresholds']['state'] == 'failed'
+    assert 'activity_count' not in result['categories']['thresholds']
     assert result['categories']['patterns']['state'] == 'partial'
     jobs['activities']['state'] = 'succeeded'
     assert repository.get_sync(user_id)['categories']['patterns']['state'] == 'complete'

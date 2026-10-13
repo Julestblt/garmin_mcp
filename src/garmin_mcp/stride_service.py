@@ -69,9 +69,9 @@ class ConnectionRepository:
         if 'id' not in connection:
             return {'state': 'not_started', 'categories': {
                 category: {'state': 'pending'} for category in
-                ('activities', 'recovery', 'fitness', 'patterns')}}
+                ('activities', 'recovery', 'fitness', 'thresholds', 'patterns')}}
         latest: dict[str, dict[str, Any]] = {}
-        for phase in ('activities', 'recovery', 'fitness'):
+        for phase in ('activities', 'recovery', 'fitness', 'thresholds'):
             rows = self.database.request('GET', 'sync_jobs', params={
                 'connection_id': f"eq.{connection['id']}", 'phase': f'eq.{phase}',
                 'mode': 'eq.historical',
@@ -80,7 +80,7 @@ class ConnectionRepository:
             if rows:
                 latest[phase] = rows[0]
         categories: dict[str, dict[str, Any]] = {}
-        for category in ('activities', 'recovery', 'fitness'):
+        for category in ('activities', 'recovery', 'fitness', 'thresholds'):
             job = latest.get(category)
             if job is None:
                 categories[category] = {'state': 'pending'}
