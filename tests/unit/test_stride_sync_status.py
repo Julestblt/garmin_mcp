@@ -6,6 +6,7 @@ from garmin_mcp.stride_service import ConnectionRepository
 def test_category_states_reflect_persisted_jobs():
     user_id = uuid.uuid4()
     connection_id = uuid.uuid4()
+    stored_activities = 3
     jobs = {
         'activities': {'state': 'queued', 'oldest_synchronized_date': '2024-01-08',
                        'activity_count': 2},
@@ -16,7 +17,11 @@ def test_category_states_reflect_persisted_jobs():
     }
 
     class Database:
-        def request(self, method, path, *, params):
+        def request(self, method, path, *, params=None, data=None):
+            if path == 'rpc/count_provider_activities':
+                assert method == 'POST'
+                assert data == {'p_connection_id': str(connection_id)}
+                return stored_activities
             assert method == 'GET'
             if path == 'provider_connections':
                 if params.get('status') == 'neq.disconnected':
@@ -36,17 +41,19 @@ def test_category_states_reflect_persisted_jobs():
     repository = ConnectionRepository(Database())
     result = repository.get_sync(user_id)
     assert result['categories']['activities']['state'] == 'partial'
-    assert result['categories']['activities']['activity_count'] == 2
+    assert result['categories']['activities']['activity_count'] == 3
     assert result['categories']['recovery']['state'] == 'running'
     assert result['categories']['fitness']['state'] == 'complete'
     assert result['categories']['patterns']['state'] == 'partial'
     jobs['activities']['state'] = 'succeeded'
     assert repository.get_sync(user_id)['categories']['patterns']['state'] == 'complete'
+    stored_activities = 4
+    assert repository.get_sync(user_id)['categories']['activities']['activity_count'] == 4
 
 
 def test_missing_jobs_return_pending_categories():
     class Database:
-        def request(self, method, path, *, params):
+        def request(self, method, path, *, params=None, data=None):
             return []
 
     result = ConnectionRepository(Database()).get_sync(uuid.uuid4())

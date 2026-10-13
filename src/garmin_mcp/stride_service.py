@@ -96,7 +96,9 @@ class ConnectionRepository:
                 'last_error_code': job['last_error_code'],
             }
             if category == 'activities':
-                result['activity_count'] = job['activity_count']
+                result['activity_count'] = self.database.request(
+                    'POST', 'rpc/count_provider_activities',
+                    data={'p_connection_id': connection['id']})
             categories[category] = result
         activity_state = categories['activities']['state']
         patterns_state = ('complete' if activity_state == 'complete' else
