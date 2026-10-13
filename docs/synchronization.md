@@ -10,7 +10,7 @@ Recovery and fitness use separate durable jobs so recent onboarding data arrives
 
 Resting heart rate is read from the requested day's `allMetrics.metricsMap.WELLNESS_RESTING_HEART_RATE` entry returned by Garmin's wellness endpoint. Legacy responses with a direct `restingHeartRate` remain supported. A metric for another date never fills the requested day. After deploying this normalization correction, incremental recovery jobs replace previously missing values for the last seven days; older missing observations require replaying their recovery import. This correction does not change historical jobs or delete imported data.
 
-The sync endpoint returns `categories.activities`, `categories.recovery`, `categories.fitness`, and `categories.patterns`. Each category uses `pending`, `running`, `partial`, `complete`, or `failed`; only activities report a verified row count. Patterns are a live weekly aggregate of normalized activities in `provider_training_weeks`, so their completeness follows the activity import. No percentage is reported.
+The sync endpoint returns `categories.activities`, `categories.recovery`, `categories.fitness`, `categories.thresholds`, and `categories.patterns`. Each category uses `pending`, `running`, `partial`, `complete`, or `failed`; only activities report a verified row count. Patterns are a live weekly aggregate of normalized activities in `provider_training_weeks`, so their completeness follows the activity import. No percentage is reported.
 
 Every normalized write is gated by a compare-and-set on the claimed job: the activity and observation upsert functions lock the `sync_jobs` row and require it to still be `running` with the worker's attempt number and an unexpired lease before writing. The cursor update uses a conditional `PATCH` that returns the updated row, so a worker whose lease expired, or whose job was reclaimed by another worker, cannot overwrite newer state. Such a stale write is discarded without incrementing the failure count, and the reclaiming worker owns the job's progress.
 
@@ -47,3 +47,26 @@ Each recovery day also reads Garmin's daily user summary. It adds `body_battery_
 - `summary`: resting heart rate, total and goal steps, average and maximum stress, and Body Battery at wake-up, charged, drained, highest, lowest and latest.
 
 The endpoint uses the same session lease as the worker. Results are cached in memory per user and day for five minutes for the current day and six hours for past days. Errors use the shared codes (`unauthorized`, `invalid_request`, `reconnect_required`, `rate_limited`, `provider_unavailable`).
+
+## Heart-rate zones and training thresholds
+
+A `thresholds` job imports the athlete's Garmin training settings so consumers can set intensity targets without estimating them. Activation queues a historical job covering the last 364 days, and applying the migration queues one for every connected connection. Once it has succeeded, the hourly scheduler adds an incremental job at most once per 24 hours covering the last 30 days. Each job is a single claim that reads, under the session lease:
+
+- heart-rate zone profiles (`/biometric-service/heartRateZones`);
+- the running lactate-threshold history with daily aggregation, which returns one entry per day Garmin measured or changed the threshold;
+- the latest race predictions and, for historical jobs only, monthly race predictions.
+
+Heart-rate zones are written to `provider_heart_rate_zones`, one row per Garmin sport profile (`DEFAULT`, `RUNNING`, …), with the training method, the five zone floors, and the maximum, resting and lactate-threshold heart rates the profile uses. Each successful zone read replaces the athlete's rows, so a profile removed in Garmin disappears. If Garmin cannot return the zones, the stored rows are kept.
+
+Thresholds and predictions are stored in `provider_observations` with domain `thresholds`, only on the days Garmin reports a value, so the rows form a change history rather than a daily series:
+
+| Metric | Unit | Day |
+| --- | --- | --- |
+| `lactate_threshold_speed_mps` | m/s | Measurement day |
+| `lactate_threshold_heart_rate_bpm` | bpm | Measurement day |
+| `race_prediction_5k_seconds`, `race_prediction_10k_seconds`, `race_prediction_half_marathon_seconds`, `race_prediction_marathon_seconds` | seconds | Prediction day; today's values are `partial` |
+
+Garmin reports the lactate-threshold speed in tenths of metres per second (a 4:23/km threshold is about `0.38`), so the worker multiplies it by ten. This was checked on a real account on 2026-10-13: read this way, the threshold pace matched the 10 km prediction, whereas reading it as seconds per metre gave a pace 43% slower. Zero, null and implausible heart rates are stored as missing. Lactate-threshold power and the cycling series are not imported.
+
+One source failing (for example a device that measures no threshold) does not fail the job: the other sources are still written, and the failure is logged as `threshold_source_unavailable`. A rate limit, an authentication error or every source failing requeues the job with backoff and writes nothing. Data deletion removes zones and threshold observations with the connection.
+

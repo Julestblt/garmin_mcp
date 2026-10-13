@@ -9,12 +9,15 @@ from typing import Any
 from garmin_mcp.stride_app import create_stride_components
 from garminconnect import GarminConnectAuthenticationError, GarminConnectTooManyRequestsError
 
-from garmin_mcp.stride_errors import PROVIDER_UNAVAILABLE, SYNC_FAILED, is_retryable
+from garmin_mcp.stride_errors import PROVIDER_UNAVAILABLE, RATE_LIMITED, SYNC_FAILED, is_retryable
 from garmin_mcp.stride_garmin import ConnectionError, GarminSessionProvider
 from garmin_mcp.stride_storage import SupabaseDatabase
 from garmin_mcp.stride_logging import configure_logging
 from garmin_mcp.stride_models import Activity, ActivitySegment
 from garmin_mcp.stride_observations import normalize_fitness, normalize_recovery
+from garmin_mcp.stride_thresholds import (HEART_RATE_ZONES_URL, normalize_heart_rate_zones,
+                                          normalize_lactate_threshold,
+                                          normalize_race_predictions)
 from garmin_mcp.stride_tracks import (GARMIN_MAX_CHART_SIZE, GARMIN_MAX_POLYLINE_SIZE,
                                       normalize_track, unavailable_track)
 
@@ -22,6 +25,7 @@ from garmin_mcp.stride_tracks import (GARMIN_MAX_CHART_SIZE, GARMIN_MAX_POLYLINE
 logger = logging.getLogger('garmin_mcp.stride.sync')
 
 
+THRESHOLD_HISTORY_DAYS = 364
 TRACK_BATCH_SIZE = 5
 TRACK_BATCH_SPACING_SECONDS = 5
 DEFAULT_TRACK_HISTORY_DAYS = 90
@@ -179,6 +183,9 @@ class ActivitySyncWorker:
         if job.get('phase') == 'tracks':
             self._process_tracks(job)
             return
+        if job.get('phase') == 'thresholds':
+            self._process_thresholds(job)
+            return
         user_id = uuid.UUID(job['user_id'])
         connection_id = uuid.UUID(job['connection_id'])
         end = date.fromisoformat(job['cursor_date']) if job['cursor_date'] else datetime.now(timezone.utc).date()
@@ -311,6 +318,71 @@ class ActivitySyncWorker:
             'sync_job_id': job['id'], 'user_id': str(user_id), 'track_count': len(tracks),
             'unavailable_count': sum(track is None or track['status'] == 'unavailable'
                                      for _, track in tracks)})
+
+    def _process_thresholds(self, job: dict[str, Any]) -> None:
+        user_id = uuid.UUID(job['user_id'])
+        connection_id = uuid.UUID(job['connection_id'])
+        today = datetime.now(timezone.utc).date()
+        start = max(date.fromisoformat(job['oldest_date']),
+                    today - timedelta(days=THRESHOLD_HISTORY_DAYS))
+        sources: dict[str, Any] = {}
+        client = self.sessions.for_user(user_id, load_profile=True)
+        try:
+            calls = {
+                'heart_rate_zones': lambda: client.connectapi(HEART_RATE_ZONES_URL),
+                'lactate_threshold': lambda: client.get_lactate_threshold(
+                    latest=False, start_date=start.isoformat(), end_date=today.isoformat(),
+                    aggregation='daily'),
+                'race_predictions': lambda: client.get_race_predictions(),
+            }
+            if job.get('mode') != 'incremental':
+                calls['race_prediction_history'] = lambda: client.get_race_predictions(
+                    start.isoformat(), today.isoformat(), 'monthly')
+            for name, call in calls.items():
+                try:
+                    sources[name] = call()
+                except GarminConnectTooManyRequestsError:
+                    raise ConnectionError(RATE_LIMITED, 429) from None
+                except GarminConnectAuthenticationError:
+                    raise
+                except Exception:
+                    logger.warning('threshold_source_unavailable', extra={
+                        'sync_job_id': job['id'], 'user_id': str(user_id), 'source': name})
+        finally:
+            self.sessions.persist(user_id, client)
+        if not sources:
+            raise ConnectionError(PROVIDER_UNAVAILABLE, 503)
+        observations = (normalize_lactate_threshold(sources.get('lactate_threshold'))
+                        + normalize_race_predictions(sources.get('race_prediction_history'),
+                                                     sources.get('race_predictions')))
+        writes = {'p_connection_id': str(connection_id), 'p_user_id': str(user_id),
+                  'p_job_id': job['id'], 'p_attempts': job['attempts']}
+        if 'heart_rate_zones' in sources:
+            stored = self.database.request('POST', 'rpc/replace_heart_rate_zones', data={
+                **writes, 'p_zones': normalize_heart_rate_zones(sources['heart_rate_zones'])})
+            if not stored:
+                raise StaleSyncJob
+        stored = self.database.request('POST', 'rpc/upsert_provider_observations', data={
+            **writes, 'p_observations': observations})
+        if not stored:
+            raise StaleSyncJob
+        now = datetime.now(timezone.utc).isoformat()
+        updated = self.database.request('PATCH', 'sync_jobs',
+                                        params={'id': f"eq.{job['id']}",
+                                                'attempts': f"eq.{job['attempts']}",
+                                                'state': 'eq.running'},
+                                        data={'state': 'succeeded', 'cursor_date': None,
+                                              'oldest_synchronized_date': start.isoformat(),
+                                              'failure_count': 0, 'last_error_code': None,
+                                              'lease_expires_at': None, 'updated_at': now,
+                                              'last_success_at': now},
+                                        prefer='return=representation')
+        if not updated:
+            raise StaleSyncJob
+        logger.info('thresholds_imported', extra={
+            'sync_job_id': job['id'], 'user_id': str(user_id),
+            'observation_count': len(observations),
+            'unavailable_sources': sorted(set(calls) - set(sources))})
 
     def _process_observations(self, job: dict[str, Any]) -> None:
         user_id = uuid.UUID(job['user_id'])

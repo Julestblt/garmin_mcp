@@ -78,7 +78,11 @@ class ActivitySegment(TypedDict):
 
 
 class Observation(TypedDict):
-    """A single normalized daily recovery or fitness metric point."""
+    """A single normalized recovery, fitness or threshold metric point.
+
+    Threshold metrics (lactate threshold, race predictions) are stored only
+    on the days Garmin reports a value, so their rows form a change history.
+    """
 
     domain: str
     metric: str
@@ -89,6 +93,22 @@ class Observation(TypedDict):
     unit: str | None
     availability: Availability
     source_updated_at: str | None
+
+
+class HeartRateZoneProfile(TypedDict):
+    """Garmin heart-rate zone configuration for one sport profile."""
+
+    sport: str
+    training_method: str | None
+    zone1_floor_bpm: int | None
+    zone2_floor_bpm: int | None
+    zone3_floor_bpm: int | None
+    zone4_floor_bpm: int | None
+    zone5_floor_bpm: int | None
+    max_heart_rate_bpm: int | None
+    resting_heart_rate_bpm: int | None
+    lactate_threshold_heart_rate_bpm: int | None
+    resting_heart_rate_auto_update: bool | None
 
 
 class SyncCategory(TypedDict, total=False):
