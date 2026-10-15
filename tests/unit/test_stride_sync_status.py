@@ -7,6 +7,7 @@ def test_category_states_reflect_persisted_jobs():
     user_id = uuid.uuid4()
     connection_id = uuid.uuid4()
     stored_activities = 3
+    incremental = []
     jobs = {
         'activities': {'state': 'queued', 'oldest_synchronized_date': '2024-01-08',
                        'activity_count': 2},
@@ -27,13 +28,14 @@ def test_category_states_reflect_persisted_jobs():
             assert method == 'GET'
             if path == 'provider_connections':
                 if params.get('status') == 'neq.disconnected':
-                    return [{'id': str(connection_id), 'status': 'connected'}]
+                    return [{'id': str(connection_id), 'status': 'connected',
+                             'manual_sync_available_at': '2024-01-15T00:05:00+00:00'}]
                 raise AssertionError(params)
             if path == 'sync_jobs':
                 assert params['connection_id'] == f'eq.{connection_id}'
                 if params['mode'] == 'eq.incremental':
-                    assert params['phase'] == 'in.(activities,recovery,fitness)'
-                    return []
+                    assert params['phase'] == 'in.(activities,recovery,fitness,tracks)'
+                    return incremental
                 assert params['mode'] == 'eq.historical'
                 phase = params['phase'][3:]
                 return [dict(jobs[phase], phase=phase, last_success_at=None,
@@ -53,6 +55,38 @@ def test_category_states_reflect_persisted_jobs():
     assert repository.get_sync(user_id)['categories']['patterns']['state'] == 'complete'
     stored_activities = 4
     assert repository.get_sync(user_id)['categories']['activities']['activity_count'] == 4
+    assert result['incremental'] is None
+    assert result['incremental_phases'] == {}
+    assert result['manual_sync_available_at'] == '2024-01-15T00:05:00+00:00'
+
+
+def test_incremental_phases_keep_the_latest_job_per_phase():
+    connection_id = uuid.uuid4()
+    rows = [
+        {'phase': 'tracks', 'state': 'queued', 'last_error_code': None,
+         'last_success_at': None, 'updated_at': '2024-01-15T00:03:00Z'},
+        {'phase': 'activities', 'state': 'running', 'last_error_code': None,
+         'last_success_at': None, 'updated_at': '2024-01-15T00:02:00Z'},
+        {'phase': 'activities', 'state': 'succeeded', 'last_error_code': None,
+         'last_success_at': '2024-01-14T23:00:00Z', 'updated_at': '2024-01-14T23:00:00Z'},
+        {'phase': 'recovery', 'state': 'succeeded', 'last_error_code': None,
+         'last_success_at': '2024-01-14T20:00:00Z', 'updated_at': '2024-01-14T20:00:00Z'},
+    ]
+
+    class Database:
+        def request(self, method, path, *, params=None, data=None):
+            if path == 'provider_connections':
+                return [{'id': str(connection_id), 'status': 'connected'}]
+            if path == 'sync_jobs' and params['mode'] == 'eq.incremental':
+                return rows
+            if path == 'rpc/count_provider_activities':
+                return 0
+            return []
+
+    result = ConnectionRepository(Database()).get_sync(uuid.uuid4())
+    assert result['incremental'] == rows[1]
+    assert result['incremental_phases'] == {
+        'tracks': rows[0], 'activities': rows[1], 'recovery': rows[3]}
 
 
 def test_missing_jobs_return_pending_categories():
