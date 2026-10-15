@@ -32,7 +32,7 @@ class FakeSessions:
     def __init__(self, client):
         self.client = client
 
-    def for_user(self, _user_id, load_profile=False):
+    def for_user(self, _user_id, load_profile=False, **_kwargs):
         return self.client
 
     def persist(self, _user_id, _client):
