@@ -1305,7 +1305,8 @@ def register_tools(app):
         If historical values are unavailable, the current profile estimate is returned
         separately and is not represented as a historical trend point.
 
-        Recommended range: 4-12 weeks. Maximum: 90 days.
+        Recommended range: 4-12 weeks. Maximum: 90 days. In Stride mode each call
+        covers at most 14 days, so read a longer trend in successive 14-day ranges.
 
         Args:
             start_date: Start date in YYYY-MM-DD format
