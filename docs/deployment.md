@@ -4,7 +4,7 @@ Apply all SQL files in `supabase/migrations/` in timestamp order to the Stride S
 
 Build with `docker build -t stride-garmin .` and start with `docker compose up -d --build`, or deploy separate API and worker containers from the same image. The API binds port 8000 inside the container. Compose publishes only on host loopback and permits the `garmin-mcp:8000` internal host for MCP. Place a TLS reverse proxy or private service network in front. If the proxy forwards a different Host value, add it to comma-separated `STRIDE_ALLOWED_HOSTS`.
 
-The image runs as UID 10001 and needs no token volume. It exposes `/healthz` for liveness, `/readyz` for database readiness, `/mcp` for streamable HTTP, and the `/v1/connections/garmin` API. Configure `GARMIN_ENABLED_TOOLS` to restrict the AI context further. Do not expose this service directly to the public internet.
+The image runs as UID 10001 and needs no token volume. It exposes `/healthz` for liveness, `/readyz` for database readiness, `/mcp` for streamable HTTP, and the `/v1/connections/garmin` API. Configure `GARMIN_ENABLED_TOOLS` to restrict the AI context further; in Stride mode it can only narrow the documented tool set, and `STRIDE_MCP_MAX_RESPONSE_BYTES` caps MCP response size (see `docs/mcp.md`). Do not expose this service directly to the public internet.
 
 ## Monitoring
 
