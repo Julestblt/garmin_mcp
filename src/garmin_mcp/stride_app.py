@@ -12,7 +12,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from garmin_mcp.stride_garmin import ConnectionError, GarminConnectionService, GarminSessionProvider
-from garmin_mcp.stride_service import ConnectionRepository, StrideConnectionService, SupabaseTokenVerifier
+from garmin_mcp.stride_service import (ConnectionRepository, StrideConnectionService,
+                                       SupabaseTokenVerifier, SyncThrottledError)
 from garmin_mcp.stride_storage import EncryptedSupabaseTokenStore, SupabaseChallengeStore, SupabaseDatabase
 from garmin_mcp.stride_wellness import WellnessDayService
 
@@ -214,6 +215,32 @@ def register_routes(app: Any, components: StrideComponents) -> None:
             return _json(result)
         except Exception:
             logger.exception('sync_lookup_failed', extra={'request_id': request_id, 'user_id': str(user_id)})
+            return _error('storage_unavailable', 503)
+
+    @app.custom_route('/v1/connections/garmin/sync', methods=['POST'])
+    async def request_sync(request: Request) -> Response:
+        user_id = _identity()
+        request_id = _request_id(request)
+        if user_id is None:
+            return _error('unauthorized', 401)
+        try:
+            result = await anyio.to_thread.run_sync(components.service.request_sync, user_id)
+            logger.info('manual_sync_requested', extra={'request_id': request_id,
+                        'user_id': str(user_id), 'status': result['request']})
+            return _json(result)
+        except SyncThrottledError as error:
+            return JSONResponse({'error': {'code': error.code},
+                                 'available_at': error.available_at},
+                                status_code=error.status,
+                                headers={'Cache-Control': 'no-store',
+                                         'Retry-After': str(error.retry_after_seconds)})
+        except ConnectionError as error:
+            logger.warning('manual_sync_rejected', extra={'request_id': request_id,
+                           'user_id': str(user_id), 'error_code': error.code})
+            return _error(error.code, error.status)
+        except Exception:
+            logger.exception('manual_sync_failed', extra={'request_id': request_id,
+                             'user_id': str(user_id)})
             return _error('storage_unavailable', 503)
 
     @app.custom_route('/v1/wellness/days/{day}', methods=['GET'])

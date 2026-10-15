@@ -14,7 +14,22 @@ The sync endpoint returns `categories.activities`, `categories.recovery`, `categ
 
 Every normalized write is gated by a compare-and-set on the claimed job: the activity and observation upsert functions lock the `sync_jobs` row and require it to still be `running` with the worker's attempt number and an unexpired lease before writing. The cursor update uses a conditional `PATCH` that returns the updated row, so a worker whose lease expired, or whose job was reclaimed by another worker, cannot overwrite newer state. Such a stale write is discarded without incrementing the failure count, and the reclaiming worker owns the job's progress.
 
-The worker schedules incremental jobs every hour for domains whose historical job succeeded. It revisits the last 14 days of activities and seven days of recovery and fitness, at most once per six hours per connection and domain. Provider corrections upsert into existing rows. Job claims and cursors are persisted, and transient failures use bounded exponential backoff. Run at least one worker container; scheduling is database-idempotent across workers. The onboarding category state tracks historical completion, while the response also includes the latest incremental job and `last_sync_at`. The worker does not stop historical activity import after an empty period because a gap is not proof that older history is absent.
+The worker schedules incremental jobs every hour for domains whose historical job succeeded. Activities are revisited every hour over the last three days, and over the last 14 days when no 14-day catch-up was created in the previous six hours, so a new activity appears within about an hour and older corrections within six. Recovery and fitness revisit the last seven days at most once per six hours per connection. An hourly activity job is skipped while another incremental activity job is queued or running, or one was created in the last 50 minutes, which also covers a manual sync. Provider corrections upsert into existing rows. Job claims and cursors are persisted, and transient failures use bounded exponential backoff. Run at least one worker container; scheduling is database-idempotent across workers. The onboarding category state tracks historical completion, while the response also includes the latest incremental job and `last_sync_at`. The worker does not stop historical activity import after an empty period because a gap is not proof that older history is absent.
+
+The status response also carries `incremental_phases`, the latest incremental job for each of `activities`, `recovery`, `fitness` and `tracks` (state, error code, last success and update time), and `manual_sync_available_at`, the earliest time a manual sync is accepted again, or null.
+
+## Manual sync
+
+`POST /v1/connections/garmin/sync` lets the authenticated user ask for fresh data. `request_manual_sync` runs in one transaction under a lock on the connection row and:
+
+- returns `409 reconnect_required` when the connection needs reconnecting, and `409 disconnected` when there is no connected Garmin account;
+- returns the status with `request: "already_running"` and queues nothing while an incremental activity job is queued or running;
+- returns `429 sync_throttled` with `available_at` and a `Retry-After` header when the previous manual sync was accepted less than five minutes ago;
+- otherwise queues an incremental `activities` job over the last three days (never before the connection's history floor), a `recovery` job for today and a `tracks` job one minute later so the new activities exist first, then returns the status with `request: "queued"`. A phase that already has a queued or running job is not duplicated.
+
+## Garmin request volume
+
+An activity window costs one summary call plus a detail and a split call per activity. With one activity a day, a connection makes about seven activity calls per hourly job and about 30 per six-hour catch-up, so about 260 calls a day, plus one recovery day (about five calls) and up to five track calls per new activity. A manual sync costs one three-day activity window, one recovery day and the pending tracks, at most once per five minutes.
 
 ## Activity enrichment
 

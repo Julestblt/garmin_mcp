@@ -19,6 +19,8 @@ PROVIDER_BUSY = 'provider_busy'
 RECONNECT_REQUIRED = 'reconnect_required'
 STORAGE_UNAVAILABLE = 'storage_unavailable'
 SYNC_FAILED = 'sync_failed'
+# A manual sync was requested less than five minutes after the previous one.
+SYNC_THROTTLED = 'sync_throttled'
 PARTIAL_DATA = 'partial_data'
 UNSUPPORTED_DATA = 'unsupported_data'
 CONNECTION_CHANGED = 'connection_changed'

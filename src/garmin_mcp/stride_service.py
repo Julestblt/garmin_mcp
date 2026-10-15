@@ -6,12 +6,17 @@ from typing import Any
 import httpx
 from mcp.server.auth.provider import AccessToken
 
-from garmin_mcp.stride_errors import CHALLENGE_EXPIRED, CONNECTION_CHANGED, INVALID_REQUEST
+from garmin_mcp.stride_errors import (CHALLENGE_EXPIRED, CONNECTION_CHANGED, DISCONNECTED,
+                                      INVALID_REQUEST, RECONNECT_REQUIRED, SYNC_THROTTLED)
 from garmin_mcp.stride_garmin import ConnectionError, GarminConnectionService
 from garmin_mcp.stride_storage import SupabaseDatabase
 
 
 logger = logging.getLogger('garmin_mcp.stride')
+
+CONNECTION_COLUMNS = ('id,status,connected_at,last_authenticated_at,last_sync_at,last_error_code,'
+                      'manual_sync_available_at')
+INCREMENTAL_PHASES = ('activities', 'recovery', 'fitness', 'tracks')
 
 
 class SupabaseTokenVerifier:
@@ -42,13 +47,13 @@ class ConnectionRepository:
         rows = self.database.request('GET', 'provider_connections', params={
             'user_id': f'eq.{user_id}', 'provider': 'eq.garmin',
             'status': 'neq.disconnected',
-            'select': 'id,status,connected_at,last_authenticated_at,last_sync_at,last_error_code',
+            'select': CONNECTION_COLUMNS,
             'limit': '1'})
         if rows:
             return rows[0]
         rows = self.database.request('GET', 'provider_connections', params={
             'user_id': f'eq.{user_id}', 'provider': 'eq.garmin',
-            'select': 'id,status,connected_at,last_authenticated_at,last_sync_at,last_error_code',
+            'select': CONNECTION_COLUMNS,
             'order': 'created_at.desc', 'limit': '1'})
         return rows[0] if rows else {'status': 'disconnected'}
 
@@ -107,14 +112,27 @@ class ConnectionRepository:
         categories['patterns'] = {'state': patterns_state}
         recent = self.database.request('GET', 'sync_jobs', params={
             'connection_id': f"eq.{connection['id']}", 'mode': 'eq.incremental',
-            'phase': 'in.(activities,recovery,fitness)',
+            'phase': f"in.({','.join(INCREMENTAL_PHASES)})",
             'select': 'state,phase,last_error_code,last_success_at,updated_at',
-            'order': 'created_at.desc', 'limit': '1'})
+            'order': 'created_at.desc', 'limit': '50'})
+        phases: dict[str, dict[str, Any]] = {}
+        for row in recent:
+            phases.setdefault(row['phase'], row)
+        incremental = next((row for row in recent if row['phase'] != 'tracks'), None)
         return {'connection_id': connection['id'], 'categories': categories,
                 'last_sync_at': connection.get('last_sync_at'),
-                'incremental': recent[0] if recent else None,
+                'incremental': incremental,
+                'incremental_phases': phases,
+                'manual_sync_available_at': connection.get('manual_sync_available_at'),
                 'updated_at': max((row['updated_at'] for row in latest.values()),
                                   default=None)}
+
+
+class SyncThrottledError(ConnectionError):
+    def __init__(self, available_at: str, retry_after_seconds: int):
+        super().__init__(SYNC_THROTTLED, 429)
+        self.available_at = available_at
+        self.retry_after_seconds = retry_after_seconds
 
 
 class StrideConnectionService:
@@ -157,6 +175,18 @@ class StrideConnectionService:
                     raise ConnectionError(CHALLENGE_EXPIRED, 410) from None
                 raise
         return self.garmin._public_result(result)
+
+    def request_sync(self, user_id: uuid.UUID) -> dict[str, Any]:
+        outcome = self.connections.database.request('POST', 'rpc/request_manual_sync',
+                                                     data={'p_user_id': str(user_id)})
+        result = outcome['result']
+        if result == 'reconnect_required':
+            raise ConnectionError(RECONNECT_REQUIRED, 409)
+        if result == 'not_connected':
+            raise ConnectionError(DISCONNECTED, 409)
+        if result == 'throttled':
+            raise SyncThrottledError(outcome['available_at'], outcome['retry_after_seconds'])
+        return {**self.connections.get_sync(user_id), 'request': result}
 
     def disconnect(self, user_id: uuid.UUID) -> None:
         self.connections.database.request('POST', 'rpc/disconnect_garmin_connection',
