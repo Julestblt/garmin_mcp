@@ -545,6 +545,28 @@ def init_api(email, password):
     return garmin
 
 
+def register_all_tools(app):
+    """Register every module's tools and the workout template resources on app."""
+    app = activity_management.register_tools(app)
+    app = health_wellness.register_tools(app)
+    app = user_profile.register_tools(app)
+    app = devices.register_tools(app)
+    app = gear_management.register_tools(app)
+    app = weight_management.register_tools(app)
+    app = challenges.register_tools(app)
+    app = training.register_tools(app)
+    app = workouts.register_tools(app)
+    app = data_management.register_tools(app)
+    app = womens_health.register_tools(app)
+    app = nutrition.register_tools(app)
+    app = workout_builders.register_tools(app)
+    app = courses.register_tools(app)
+    app = activity_analysis.register_tools(app)
+    app = calendar_events.register_tools(app)
+    app = workout_templates.register_resources(app)
+    return app
+
+
 def main():
     """Initialize the MCP server and register all tools"""
 
@@ -582,11 +604,16 @@ def main():
         if transport != 'streamable-http':
             raise ValueError('STRIDE_MODE requires GARMIN_MCP_TRANSPORT=streamable-http')
         from garmin_mcp.stride_app import create_stride_components
-        from garmin_mcp.stride_mcp import DEFAULT_TOOLS, UserScopedGarminProxy, read_only_tool
+        from garmin_mcp.stride_mcp import (DEFAULT_TOOLS, UserScopedGarminProxy, read_only_tool,
+                                           resolve_max_response_bytes)
         components = create_stride_components()
         enabled_tools = enabled_tools or DEFAULT_TOOLS
         if not all(read_only_tool(name) for name in enabled_tools):
             raise ValueError('Stride MCP tools must be read-only')
+        outside = sorted(enabled_tools - DEFAULT_TOOLS)
+        if outside:
+            raise ValueError('Stride MCP tools must be in the documented set: ' + ', '.join(outside))
+        max_response_bytes = resolve_max_response_bytes()
         garmin_client = UserScopedGarminProxy(components.sessions)
     else:
         pending_client = _PendingGarminClient(timeout=90.0)
@@ -628,32 +655,17 @@ def main():
         )
     else:
         fastmcp = FastMCP("Garmin Connect v1.0", host=http_host, port=http_port)
-    app = _ToolFilter(fastmcp, enabled_tools, disabled_tools)
+    registrar = fastmcp
+    if stride_mode:
+        from garmin_mcp.stride_mcp import StrideToolGuard
+        registrar = StrideToolGuard(fastmcp, max_response_bytes)
+    app = _ToolFilter(registrar, enabled_tools, disabled_tools)
     if enabled_tools:
         print(f"Tool filter: allowlist of {len(enabled_tools)} tool(s).", file=sys.stderr)
     elif disabled_tools:
         print(f"Tool filter: denylist of {len(disabled_tools)} tool(s).", file=sys.stderr)
 
-    # Register tools from all modules
-    app = activity_management.register_tools(app)
-    app = health_wellness.register_tools(app)
-    app = user_profile.register_tools(app)
-    app = devices.register_tools(app)
-    app = gear_management.register_tools(app)
-    app = weight_management.register_tools(app)
-    app = challenges.register_tools(app)
-    app = training.register_tools(app)
-    app = workouts.register_tools(app)
-    app = data_management.register_tools(app)
-    app = womens_health.register_tools(app)
-    app = nutrition.register_tools(app)
-    app = workout_builders.register_tools(app)
-    app = courses.register_tools(app)
-    app = activity_analysis.register_tools(app)
-    app = calendar_events.register_tools(app)
-
-    # Register resources (workout templates)
-    app = workout_templates.register_resources(app)
+    app = register_all_tools(app)
 
     # Warn about filter entries that matched no tool (most likely typos)
     unknown = app.unknown_filter_names()

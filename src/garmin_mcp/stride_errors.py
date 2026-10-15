@@ -7,6 +7,7 @@ contract and must not be renamed without a migration.
 """
 
 INVALID_REQUEST = 'invalid_request'
+RANGE_TOO_LARGE = 'range_too_large'
 UNAUTHORIZED = 'unauthorized'
 INVALID_CREDENTIALS = 'invalid_credentials'
 INVALID_MFA = 'invalid_mfa'
