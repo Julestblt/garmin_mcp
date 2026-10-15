@@ -14,6 +14,8 @@ INVALID_MFA = 'invalid_mfa'
 CHALLENGE_EXPIRED = 'challenge_expired'
 RATE_LIMITED = 'rate_limited'
 PROVIDER_UNAVAILABLE = 'provider_unavailable'
+# The Garmin session is held by another operation (usually a sync); retry shortly.
+PROVIDER_BUSY = 'provider_busy'
 RECONNECT_REQUIRED = 'reconnect_required'
 STORAGE_UNAVAILABLE = 'storage_unavailable'
 SYNC_FAILED = 'sync_failed'

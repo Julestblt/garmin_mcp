@@ -17,12 +17,22 @@ from garmin_mcp.stride_storage import SupabaseChallengeStore, TokenStore
 
 logger = logging.getLogger('garmin_mcp.stride.garmin')
 
+# Seconds the sync worker and REST API wait for a user's session lease.
+LEASE_WAIT_SECONDS = 90.0
+
 
 class ConnectionError(Exception):
     def __init__(self, code: str, status: int):
         super().__init__(code)
         self.code = code
         self.status = status
+
+
+class LeaseBusyError(ConnectionError):
+    """The session lease stayed held by another operation for the whole wait."""
+
+    def __init__(self) -> None:
+        super().__init__(PROVIDER_UNAVAILABLE, 503)
 
 
 def map_error(error: Exception) -> ConnectionError:
@@ -122,14 +132,15 @@ class GarminSessionProvider:
             'error_code': RECONNECT_REQUIRED})
         raise ConnectionError(RECONNECT_REQUIRED, 409)
 
-    def _acquire(self, connection_id: uuid.UUID) -> uuid.UUID:
+    def _acquire(self, connection_id: uuid.UUID, wait: float) -> uuid.UUID:
         owner = uuid.uuid4()
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
+        deadline = time.monotonic() + wait
+        while True:
             if self.tokens.acquire(connection_id, owner):
                 return owner
+            if time.monotonic() >= deadline:
+                raise LeaseBusyError()
             time.sleep(0.1)
-        raise ConnectionError(PROVIDER_UNAVAILABLE, 503)
 
     def _release(self, client: Garmin) -> None:
         owner = getattr(client, '_stride_lease_owner', None)
@@ -156,7 +167,8 @@ class GarminSessionProvider:
 
         threading.Thread(target=maintain, name='garmin-session-lease', daemon=True).start()
 
-    def for_user(self, user_id: uuid.UUID, load_profile: bool = False) -> Garmin:
+    def for_user(self, user_id: uuid.UUID, load_profile: bool = False,
+                 lease_wait: float = LEASE_WAIT_SECONDS) -> Garmin:
         connection = self.connections.get(user_id) if self.connections else None
         if connection and connection['status'] != 'connected':
             raise ConnectionError(RECONNECT_REQUIRED, 409)
@@ -165,7 +177,7 @@ class GarminSessionProvider:
         ready = False
         try:
             if connection and hasattr(self.tokens, 'acquire'):
-                owner = self._acquire(uuid.UUID(connection['id']))
+                owner = self._acquire(uuid.UUID(connection['id']), lease_wait)
                 stored = self.tokens.load_versioned(user_id)
                 token = stored[0] if stored else None
             else:
