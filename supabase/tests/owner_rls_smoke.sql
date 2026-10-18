@@ -16,7 +16,8 @@ begin
       where schemaname = 'public' and policyname in (
         'connections_owner_read', 'sync_jobs_owner_read', 'activities_owner_read',
         'activity_segments_owner_read', 'observations_owner_read',
-        'activity_tracks_owner_read', 'heart_rate_zones_owner_read')) <> 7 then
+        'activity_tracks_owner_read', 'heart_rate_zones_owner_read',
+        'workouts_owner_read')) <> 8 then
     raise exception 'An expected owner policy is missing';
   end if;
 end $$;
