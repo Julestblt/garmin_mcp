@@ -6,4 +6,4 @@ Serve the container behind a trusted TLS reverse proxy or private network. The s
 
 Do not log passwords, OTPs, token JSON, challenge ciphertext, or service keys. Operational logs use user and job IDs plus stable error codes. Rotate the Fernet key through a planned re-encryption process; replacing it without migration makes stored sessions unreadable. Back up Supabase tables according to Stride's data policy.
 
-Read-only mode is enforced when Stride starts: only `get_`, `count_`, `search_`, and `download_` tools may register, and the default allowlist contains ten tools. The HTTP API has no Garmin mutation route. Local stdio mode still retains upstream write tools.
+Read-only mode is enforced when Stride starts: only `get_`, `count_`, `search_`, and `download_` tools may register, and the default allowlist contains ten tools. The only HTTP route that writes to Garmin pushes Stride planned sessions to the calendar (`docs/workouts.md`); it deletes only workouts it created and recorded in `provider_workouts`, and no MCP tool can reach it. Local stdio mode still retains upstream write tools.
