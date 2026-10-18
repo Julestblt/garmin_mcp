@@ -16,6 +16,8 @@ from garmin_mcp.stride_service import (ConnectionRepository, StrideConnectionSer
                                        SupabaseTokenVerifier, SyncThrottledError)
 from garmin_mcp.stride_storage import EncryptedSupabaseTokenStore, SupabaseChallengeStore, SupabaseDatabase
 from garmin_mcp.stride_wellness import WellnessDayService
+from garmin_mcp.stride_workouts import (WorkoutPushService, WorkoutRepository, WorkoutRequestError,
+                                       parse_reconcile)
 
 
 logger = logging.getLogger('garmin_mcp.stride')
@@ -29,6 +31,7 @@ class StrideComponents:
     verifier: SupabaseTokenVerifier
     service: StrideConnectionService
     wellness: WellnessDayService
+    workouts: WorkoutPushService
 
 
 def create_stride_components() -> StrideComponents:
@@ -42,7 +45,8 @@ def create_stride_components() -> StrideComponents:
     challenges = SupabaseChallengeStore(database, encryption_key)
     service = StrideConnectionService(GarminConnectionService(sessions, challenges), connections)
     return StrideComponents(url, database, sessions, SupabaseTokenVerifier(url, key), service,
-                            WellnessDayService(sessions))
+                            WellnessDayService(sessions),
+                            WorkoutPushService(sessions, WorkoutRepository(database)))
 
 
 def _identity() -> uuid.UUID | None:
@@ -71,12 +75,12 @@ def _json(data: dict[str, Any]) -> JSONResponse:
     return JSONResponse(data, headers={'Cache-Control': 'no-store'})
 
 
-async def _body(request: Request) -> dict[str, Any] | None:
+async def _body(request: Request, limit: int = 16_384) -> dict[str, Any] | None:
     try:
         payload = bytearray()
         async for chunk in request.stream():
             payload.extend(chunk)
-            if len(payload) > 16_384:
+            if len(payload) > limit:
                 return None
         data = json.loads(payload)
     except (ValueError, UnicodeError):
@@ -181,6 +185,8 @@ def register_routes(app: Any, components: StrideComponents) -> None:
         if user_id is None:
             return _error('unauthorized', 401)
         try:
+            today = datetime.now(timezone.utc).date()
+            await anyio.to_thread.run_sync(components.workouts.forget, user_id, today)
             await anyio.to_thread.run_sync(components.service.disconnect, user_id)
             logger.info('connection_disconnected', extra={'request_id': request_id, 'user_id': str(user_id)})
             return Response(status_code=204)
@@ -267,3 +273,48 @@ def register_routes(app: Any, components: StrideComponents) -> None:
             logger.exception('wellness_day_unavailable', extra={'request_id': request_id,
                              'user_id': str(user_id)})
             return _error('provider_unavailable', 503)
+
+    @app.custom_route('/v1/connections/garmin/workouts', methods=['PUT'])
+    async def reconcile_workouts(request: Request) -> Response:
+        user_id = _identity()
+        request_id = _request_id(request)
+        if user_id is None:
+            return _error('unauthorized', 401)
+        body = await _body(request, limit=262_144)
+        try:
+            start, end, workouts = parse_reconcile(body, datetime.now(timezone.utc).date())
+        except WorkoutRequestError:
+            return _error('invalid_request', 400)
+        try:
+            result = await anyio.to_thread.run_sync(components.workouts.reconcile, user_id,
+                                                    start, end, workouts)
+            return _json(result)
+        except ConnectionError as error:
+            logger.warning('workout_reconcile_rejected', extra={'request_id': request_id,
+                           'user_id': str(user_id), 'error_code': error.code})
+            return _error(error.code, error.status)
+        except Exception:
+            logger.exception('workout_reconcile_failed', extra={'request_id': request_id,
+                             'user_id': str(user_id)})
+            return _error('service_unavailable', 503)
+
+    @app.custom_route('/v1/connections/garmin/workouts', methods=['DELETE'])
+    async def remove_workouts(request: Request) -> Response:
+        user_id = _identity()
+        request_id = _request_id(request)
+        if user_id is None:
+            return _error('unauthorized', 401)
+        try:
+            removed = await anyio.to_thread.run_sync(components.workouts.remove_upcoming, user_id,
+                                                     datetime.now(timezone.utc).date())
+            logger.info('workouts_removed', extra={'request_id': request_id,
+                        'user_id': str(user_id), 'removed': removed})
+            return _json({'removed': removed})
+        except ConnectionError as error:
+            logger.warning('workout_removal_rejected', extra={'request_id': request_id,
+                           'user_id': str(user_id), 'error_code': error.code})
+            return _error(error.code, error.status)
+        except Exception:
+            logger.exception('workout_removal_failed', extra={'request_id': request_id,
+                             'user_id': str(user_id)})
+            return _error('service_unavailable', 503)
