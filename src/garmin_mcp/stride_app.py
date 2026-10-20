@@ -12,6 +12,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from garmin_mcp.stride_garmin import ConnectionError, GarminConnectionService, GarminSessionProvider
+from garmin_mcp.stride_gear import (GearRepository, GearRequestError, GearService, gear_uuid,
+                                    parse_activity_gear, parse_create, parse_update)
 from garmin_mcp.stride_service import (ConnectionRepository, StrideConnectionService,
                                        SupabaseTokenVerifier, SyncThrottledError)
 from garmin_mcp.stride_storage import EncryptedSupabaseTokenStore, SupabaseChallengeStore, SupabaseDatabase
@@ -32,6 +34,7 @@ class StrideComponents:
     service: StrideConnectionService
     wellness: WellnessDayService
     workouts: WorkoutPushService
+    gear: GearService
 
 
 def create_stride_components() -> StrideComponents:
@@ -46,7 +49,8 @@ def create_stride_components() -> StrideComponents:
     service = StrideConnectionService(GarminConnectionService(sessions, challenges), connections)
     return StrideComponents(url, database, sessions, SupabaseTokenVerifier(url, key), service,
                             WellnessDayService(sessions),
-                            WorkoutPushService(sessions, WorkoutRepository(database)))
+                            WorkoutPushService(sessions, WorkoutRepository(database)),
+                            GearService(sessions, GearRepository(database)))
 
 
 def _identity() -> uuid.UUID | None:
@@ -318,3 +322,52 @@ def register_routes(app: Any, components: StrideComponents) -> None:
             logger.exception('workout_removal_failed', extra={'request_id': request_id,
                              'user_id': str(user_id)})
             return _error('service_unavailable', 503)
+
+    async def _gear_call(request: Request, event: str, call: Any) -> Response:
+        user_id = _identity()
+        request_id = _request_id(request)
+        if user_id is None:
+            return _error('unauthorized', 401)
+        try:
+            result = await anyio.to_thread.run_sync(call, user_id)
+            return _json(result)
+        except ConnectionError as error:
+            logger.warning(f'{event}_rejected', extra={'request_id': request_id,
+                           'user_id': str(user_id), 'error_code': error.code})
+            return _error(error.code, error.status)
+        except Exception:
+            logger.exception(f'{event}_failed', extra={'request_id': request_id,
+                             'user_id': str(user_id)})
+            return _error('service_unavailable', 503)
+
+    @app.custom_route('/v1/connections/garmin/gear', methods=['POST'])
+    async def create_gear(request: Request) -> Response:
+        body = await _body(request)
+        try:
+            payload = parse_create(body)
+        except GearRequestError:
+            return _error('invalid_request', 400) if _identity() else _error('unauthorized', 401)
+        return await _gear_call(request, 'gear_create',
+                                lambda user_id: components.gear.create(user_id, payload))
+
+    @app.custom_route('/v1/connections/garmin/gear/{gear_uuid}', methods=['PATCH'])
+    async def update_gear(request: Request) -> Response:
+        body = await _body(request)
+        try:
+            key = gear_uuid(request.path_params.get('gear_uuid'))
+            payload = parse_update(body)
+        except GearRequestError:
+            return _error('invalid_request', 400) if _identity() else _error('unauthorized', 401)
+        return await _gear_call(request, 'gear_update',
+                                lambda user_id: components.gear.update(user_id, key, payload))
+
+    @app.custom_route('/v1/connections/garmin/activities/{activity_id}/gear', methods=['PUT'])
+    async def set_activity_gear(request: Request) -> Response:
+        body = await _body(request)
+        try:
+            activity_id, key = parse_activity_gear(request.path_params.get('activity_id'), body)
+        except GearRequestError:
+            return _error('invalid_request', 400) if _identity() else _error('unauthorized', 401)
+        return await _gear_call(request, 'activity_gear',
+                                lambda user_id: components.gear.set_activity_gear(
+                                    user_id, activity_id, key))

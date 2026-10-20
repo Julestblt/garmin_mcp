@@ -29,7 +29,7 @@ The status response also carries `incremental_phases`, the latest incremental jo
 
 ## Garmin request volume
 
-An activity window costs one summary call plus a detail and a split call per activity. With one activity a day, a connection makes about seven activity calls per hourly job and about 30 per six-hour catch-up, so about 260 calls a day, plus one recovery day (about five calls) and up to five track calls per new activity. A manual sync costs one three-day activity window, one recovery day and the pending tracks, at most once per five minutes.
+An activity window costs one summary call plus a detail and a split call per activity. The last window of a job also refreshes running shoes: two calls, one stats call per shoe and one activity-list call per shoe whose totals changed (see `docs/gear.md`). With one activity a day, a connection makes about seven activity calls per hourly job and about 30 per six-hour catch-up, so about 260 calls a day, plus one recovery day (about five calls) and up to five track calls per new activity. A manual sync costs one three-day activity window, one recovery day and the pending tracks, at most once per five minutes.
 
 ## Activity enrichment
 

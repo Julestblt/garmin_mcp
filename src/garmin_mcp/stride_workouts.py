@@ -266,7 +266,7 @@ def _provider_status(error: Exception) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _failure(error: Exception) -> ConnectionError:
+def provider_failure(error: Exception) -> ConnectionError:
     if isinstance(error, ConnectionError):
         return error
     status = _provider_status(error)
@@ -358,7 +358,7 @@ class WorkoutPushService:
                 try:
                     self._remove(client, row['provider_workout_id'])
                 except Exception as error:
-                    failure = _failure(error)
+                    failure = provider_failure(error)
                     if failure.code == RECONNECT_REQUIRED:
                         raise failure from None
                     logger.warning('workout_removal_failed', extra={
@@ -404,7 +404,7 @@ class WorkoutPushService:
                 record['status'] = 'sent'
                 record['sent_at'] = datetime.now(timezone.utc).isoformat()
         except Exception as error:
-            failure = _failure(error)
+            failure = provider_failure(error)
             if failure.code == RECONNECT_REQUIRED:
                 raise failure from None
             record['status'] = 'failed'
@@ -427,7 +427,7 @@ class WorkoutPushService:
                 try:
                     self._remove(client, row['provider_workout_id'])
                 except Exception as error:
-                    raise _failure(error) from None
+                    raise provider_failure(error) from None
                 self.workouts.delete(user_id, row['external_key'])
                 removed += 1
         finally:

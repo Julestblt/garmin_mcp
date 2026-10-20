@@ -11,6 +11,7 @@ from garminconnect import GarminConnectAuthenticationError, GarminConnectTooMany
 
 from garmin_mcp.stride_errors import PROVIDER_UNAVAILABLE, RATE_LIMITED, SYNC_FAILED, is_retryable
 from garmin_mcp.stride_garmin import ConnectionError, GarminSessionProvider
+from garmin_mcp.stride_gear import GearRepository, GearService, GearSnapshot
 from garmin_mcp.stride_storage import SupabaseDatabase
 from garmin_mcp.stride_logging import configure_logging
 from garmin_mcp.stride_models import Activity, ActivitySegment
@@ -148,6 +149,17 @@ class ActivitySyncWorker:
     def __init__(self, database: SupabaseDatabase, sessions: GarminSessionProvider):
         self.database = database
         self.sessions = sessions
+        self.gear = GearService(sessions, GearRepository(database))
+
+    def _collect_gear(self, client: Any, user_id: uuid.UUID,
+                      connection_id: uuid.UUID) -> GearSnapshot | None:
+        try:
+            return self.gear.collect(client, user_id, str(connection_id))
+        except GarminConnectAuthenticationError:
+            raise
+        except Exception:
+            logger.warning('gear_refresh_failed', extra={'user_id': str(user_id)})
+            return None
 
     def run_once(self) -> bool:
         jobs = self.database.request('POST', 'rpc/claim_sync_job', data={})
@@ -220,6 +232,7 @@ class ActivitySyncWorker:
                 splits = client.get_activity_splits(provider_id)
                 rows.append((normalize_activity(user_id, connection_id, activity, detail),
                              normalize_segments(splits)))
+            gear = self._collect_gear(client, user_id, connection_id) if start == oldest else None
         finally:
             self.sessions.persist(user_id, client)
         for activity, segments in rows:
@@ -229,6 +242,11 @@ class ActivitySyncWorker:
                 'p_activity': activity, 'p_segments': segments})
             if not stored:
                 raise StaleSyncJob
+        if gear is not None:
+            try:
+                self.gear.repository.store(user_id, str(connection_id), gear)
+            except Exception:
+                logger.warning('gear_store_failed', extra={'user_id': str(user_id)})
         activity_count = self.database.request('POST', 'rpc/count_provider_activities',
                                                data={'p_connection_id': str(connection_id)})
         finished = start == oldest

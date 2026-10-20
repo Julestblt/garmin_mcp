@@ -18,4 +18,4 @@ Normalized contracts live in `stride_models`, and provider failures are mapped t
 - Fernet key rotation needs a planned re-encryption pass; replacing `GARMIN_TOKEN_ENCRYPTION_KEY` without migrating stored sessions makes them unreadable.
 - Activity tracks are parsed defensively from Garmin Connect's activity-details format and covered by synthetic payloads. The metric keys for cadence and power in particular should be confirmed against a real account before Stride depends on those series.
 - There is no aggregate metrics endpoint. Observability is structured stderr logs (see `docs/deployment.md`).
-- The API exposes read-only Garmin data, lifecycle operations and one write: pushing Stride planned sessions to the Garmin calendar (see `docs/workouts.md`). It is deliberately not a generic REST wrapper over every MCP tool.
+- The API exposes read-only Garmin data, lifecycle operations and two kinds of writes: pushing Stride planned sessions to the Garmin calendar (see `docs/workouts.md`) and running-shoe writes: creating and updating shoes and setting the shoe of an activity (see `docs/gear.md`). It is deliberately not a generic REST wrapper over every MCP tool.
