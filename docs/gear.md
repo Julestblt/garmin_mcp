@@ -13,7 +13,7 @@ Garmin has no field for distance run before a shoe entered Garmin. Stride keeps 
 
 ## Refresh
 
-The last window of every activity job (historical or incremental) refreshes shoes: one profile lookup, the gear list, one stats call per shoe, and the activity list of each shoe whose totals changed since the last refresh. A shoe that disappeared from Garmin is deleted with its links. A failed refresh is logged as `gear_refresh_failed` and never fails the activity job. A manual sync therefore refreshes shoes too.
+The last window of every activity job (historical or incremental) refreshes shoes: one profile lookup, the gear list, one stats call per shoe, and, for each shoe whose totals changed since the last refresh, its v2 details and its activity list. The legacy gear list names pairs typed freely as "Other" / "Unknown Shoes", so brand and model come from the v2 details. A shoe that disappeared from Garmin is deleted with its links. A failed refresh is logged as `gear_refresh_failed` and never fails the activity job. A manual sync therefore refreshes shoes too.
 
 ## Create a shoe
 
@@ -30,7 +30,9 @@ The last window of every activity job (historical or incremental) refreshes shoe
 }
 ```
 
-`max_distance_meters` (1 to 5,000,000) and `default_activity_types` (`running`, `trail_running`, `treadmill_running`) are optional. The shoe is created through Garmin's gear v2 endpoint and the response is `{"gear": <provider_gear row>}`.
+`max_distance_meters` (1 to 5,000,000) and `default_activity_types` (`running`, `trail_running`, `treadmill_running`) are optional. The shoe is created through Garmin's gear v2 endpoint with the note « Ajoutée depuis Stride », because Garmin rejects an empty note. The response is `{"gear": <provider_gear row>}`.
+
+Garmin only links a shoe to activities on or after its `first_use_date`, so send the date the pair was first worn, not the day it is added.
 
 ## Update a shoe
 
@@ -38,7 +40,7 @@ The last window of every activity job (historical or incremental) refreshes shoe
 
 ## Set the shoe of an activity
 
-`PUT /v1/connections/garmin/activities/{provider_activity_id}/gear` with `{"gear_uuid": "<uuid>"}` links the shoe and unlinks any other shoe from that activity in Garmin; `{"gear_uuid": null}` removes the shoe. The activity must be one of the athlete's imported activities (`404 activity_not_found`) and the shoe one of their shoes (`404 gear_not_found`). The response holds the refreshed rows of the shoes involved.
+`PUT /v1/connections/garmin/activities/{provider_activity_id}/gear` with `{"gear_uuid": "<uuid>"}` links the shoe and unlinks any other shoe from that activity in Garmin; `{"gear_uuid": null}` removes the shoe. The activity must be one of the athlete's imported activities (`404 activity_not_found`) and the shoe one of their shoes (`404 gear_not_found`). The response holds the refreshed rows of the shoes involved. An activity before the shoe's first use date returns `422 gear_starts_after_activity`.
 
 ## Errors
 

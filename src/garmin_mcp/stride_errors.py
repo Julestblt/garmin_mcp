@@ -31,6 +31,8 @@ CONNECTION_REPLACED = 'connection_replaced'
 # The gear or activity is not one of the athlete's Garmin records.
 GEAR_NOT_FOUND = 'gear_not_found'
 ACTIVITY_NOT_FOUND = 'activity_not_found'
+# Garmin only links a shoe to activities on or after its first use date.
+GEAR_STARTS_AFTER_ACTIVITY = 'gear_starts_after_activity'
 
 # Provider failures that are safe to retry with backoff.
 RETRYABLE_CODES = frozenset({RATE_LIMITED, PROVIDER_UNAVAILABLE})

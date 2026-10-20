@@ -17,7 +17,8 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from garmin_mcp.stride_errors import (ACTIVITY_NOT_FOUND, DISCONNECTED, GEAR_NOT_FOUND,
-                                      PROVIDER_UNAVAILABLE, RECONNECT_REQUIRED)
+                                      GEAR_STARTS_AFTER_ACTIVITY, PROVIDER_UNAVAILABLE,
+                                      RECONNECT_REQUIRED)
 from garmin_mcp.stride_garmin import ConnectionError, GarminSessionProvider
 from garmin_mcp.stride_storage import SupabaseDatabase
 from garmin_mcp.stride_workouts import provider_failure
@@ -31,6 +32,8 @@ DEFAULT_ACTIVITY_TYPES = frozenset({'running', 'trail_running', 'treadmill_runni
 GEAR_ACTIVITY_LIMIT = 1000
 MAX_DISTANCE_METERS = 5_000_000
 SOCIAL_PROFILE_URL = '/userprofile-service/socialProfile'
+CREATED_NOTE = 'Ajoutée depuis Stride'
+UNMATCHED_CATALOG = frozenset({'other', 'unknown shoes'})
 
 
 class GearRequestError(ValueError):
@@ -66,9 +69,20 @@ def _text(value: Any) -> str | None:
     return value.strip() or None if isinstance(value, str) else None
 
 
+def _catalog(value: Any) -> str | None:
+    text = _text(value)
+    return None if text is None or text.lower() in UNMATCHED_CATALOG else text
+
+
 def normalize_gear(user_id: uuid.UUID, connection_id: str, gear: dict[str, Any],
-                   stats: dict[str, Any]) -> dict[str, Any] | None:
-    """Map a legacy Garmin gear record and its stats to a ``provider_gear`` row."""
+                   stats: dict[str, Any],
+                   details: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Map a legacy Garmin gear record, its stats and v2 details to a ``provider_gear`` row.
+
+    The legacy record names free-text pairs "Other" / "Unknown Shoes"; the v2
+    details keep the brand and model the athlete typed.
+    """
+    details = details or {}
     if 'shoe' not in str(gear.get('gearTypeName') or '').lower():
         return None
     try:
@@ -82,8 +96,8 @@ def normalize_gear(user_id: uuid.UUID, connection_id: str, gear: dict[str, Any],
     return {
         'user_id': str(user_id), 'connection_id': str(connection_id), 'provider': 'garmin',
         'gear_uuid': key, 'gear_type': 'shoes',
-        'brand': _text(gear.get('gearMakeName')),
-        'model': _text(gear.get('gearModelName')),
+        'brand': _text(details.get('brand')) or _catalog(gear.get('gearMakeName')),
+        'model': _text(details.get('model')) or _catalog(gear.get('gearModelName')),
         'display_name': _text(gear.get('displayName')) or _text(gear.get('customMakeModel')),
         'status': 'retired' if status == 'retired' else 'active',
         'first_use_date': _day(gear.get('dateBegin')),
@@ -175,7 +189,7 @@ class GearRepository:
     def list(self, user_id: uuid.UUID) -> list[dict[str, Any]]:
         return self.database.request('GET', 'provider_gear', params={
             'user_id': f'eq.{user_id}', 'provider': 'eq.garmin',
-            'select': 'gear_uuid,total_distance_meters,total_activities'}) or []
+            'select': 'gear_uuid,brand,model,total_distance_meters,total_activities'}) or []
 
     def activity_exists(self, user_id: uuid.UUID, activity_id: str) -> bool:
         return bool(self.database.request('GET', 'provider_activities', params={
@@ -222,6 +236,15 @@ def _profile_number(client: Any) -> Any:
     return number
 
 
+def _details(client: Any, key: str) -> dict[str, Any]:
+    try:
+        details = client.get_gear_details(dashed(key))
+    except Exception:
+        logger.warning('gear_details_unavailable')
+        return {}
+    return details if isinstance(details, dict) else {}
+
+
 def _activity_ids(activities: Any) -> list[str]:
     if not isinstance(activities, list):
         return []
@@ -253,14 +276,18 @@ class GearService:
             if only is not None and key not in only:
                 continue
             stats = client.get_gear_stats(key)
-            row = normalize_gear(user_id, connection_id, gear, stats if isinstance(stats, dict) else {})
+            stats = stats if isinstance(stats, dict) else {}
+            previous = stored.get(key)
+            changed = only is not None or previous is None or (
+                previous['total_activities'], previous['total_distance_meters']) != (
+                stats.get('totalActivities', 0), _number(stats.get('totalDistance')) or 0.0)
+            details = (_details(client, key) if changed
+                       else {'brand': previous.get('brand'), 'model': previous.get('model')})
+            row = normalize_gear(user_id, connection_id, gear, stats, details)
             if row is None:
                 continue
             rows.append(row)
-            previous = stored.get(key)
-            if only is not None or previous is None or (
-                    previous['total_activities'], previous['total_distance_meters']) != (
-                    row['total_activities'], row['total_distance_meters']):
+            if changed:
                 links[key] = _activity_ids(client.get_gear_activities(key, GEAR_ACTIVITY_LIMIT))
         return GearSnapshot(rows, links, only is None)
 
@@ -298,6 +325,7 @@ class GearService:
                 'SHOES', request['brand'], request['model'], request['name'],
                 request['first_use_date'],
                 max_usage_distance_km=maximum / 1000 if maximum else None,
+                notes=CREATED_NOTE,
                 activity_type_keys=request['default_activity_types'] or None)
             if not isinstance(created, dict):
                 raise ConnectionError(PROVIDER_UNAVAILABLE, 503)
@@ -351,7 +379,12 @@ class GearService:
             for other in sorted(linked - {key}):
                 client.remove_gear_from_activity(other, activity_id)
             if key is not None and key not in linked:
-                client.add_gear_to_activity(key, activity_id)
+                try:
+                    client.add_gear_to_activity(key, activity_id)
+                except Exception as error:
+                    if 'start date must be before' in str(error).lower():
+                        raise ConnectionError(GEAR_STARTS_AFTER_ACTIVITY, 422) from None
+                    raise
             return linked | ({key} if key else set())
 
         snapshot = self._write(user_id, apply)

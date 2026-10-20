@@ -51,6 +51,12 @@ class Client:
         self.calls.append(('stats', key))
         return self.stats.get(key, {})
 
+    def get_gear_details(self, key):
+        self.calls.append(('details', key))
+        gear = self.gear[key.replace('-', '')]
+        brand, model = getattr(self, 'created', (gear['gearMakeName'], gear['gearModelName'])) if key.replace('-', '') == '9' * 32 else (gear['gearMakeName'], gear['gearModelName'])
+        return {'brand': brand, 'model': model, 'name': gear['displayName']}
+
     def get_gear_activities(self, key, limit):
         self.calls.append(('activities', key))
         return [{'activityId': int(item)} for item in self.activities.get(key, [])]
@@ -60,7 +66,8 @@ class Client:
         if self.fail:
             raise self.fail
         key = '9' * 32
-        self.gear[key] = _legacy(key, f'{brand} {model}')
+        self.gear[key] = {**_legacy(key, name), 'gearMakeName': 'Other', 'gearModelName': 'Unknown Shoes'}
+        self.created = (brand, model)
         return {'uuid': dashed(key), 'gearType': 'SHOES'}
 
     def update_gear(self, key, **changes):
@@ -79,6 +86,9 @@ class Client:
 
     def add_gear_to_activity(self, key, activity_id):
         self.calls.append(('link', key, activity_id))
+        if activity_id == '104':
+            raise GarminConnectConnectionError(
+                "API Error 400 - Gear's start date must be before activity's start date")
         self.activities.setdefault(key, []).append(activity_id)
 
 
@@ -231,8 +241,10 @@ def test_create_sends_a_shoe_to_garmin_and_stores_it():
 
     assert sessions.client.calls[0] == ('create', 'SHOES', 'HOKA', 'Speedgoat 7', 'Speedgoat 7',
                                         '2026-10-20', {'max_usage_distance_km': 700.0,
+                                                       'notes': 'Ajoutée depuis Stride',
                                                        'activity_type_keys': ['trail_running']})
     assert result['gear']['gear_uuid'] == '9' * 32
+    assert (result['gear']['brand'], result['gear']['model']) == ('HOKA', 'Speedgoat 7')
     assert set(database.gear) == {'9' * 32}
     assert sessions.persisted == 1
 
@@ -353,3 +365,31 @@ def test_snapshot_from_a_partial_refresh_keeps_other_gear():
 
     assert isinstance(snapshot, GearSnapshot) and not snapshot.complete
     assert set(database.gear) == {EVO, ZEGAMA}
+
+
+def test_unmatched_catalog_names_are_dropped_without_v2_details():
+    row = normalize_gear(USER, 'connection', {**_legacy(EVO, 'Stride test'), 'gearMakeName': 'Other',
+                                              'gearModelName': 'Unknown Shoes'}, {})
+
+    assert (row['brand'], row['model'], row['display_name']) == (None, None, 'Stride test')
+
+
+def test_unchanged_pairs_keep_stored_brand_without_extra_calls():
+    service, sessions, database = _service()
+    _sync(service, sessions)
+    sessions.client.calls.clear()
+
+    _sync(service, sessions)
+
+    assert not any(call[0] in ('details', 'activities') for call in sessions.client.calls)
+    assert database.gear[EVO]['brand'] == 'Adidas'
+
+
+def test_linking_before_the_first_use_date_returns_a_clear_error():
+    service, sessions, _database = _service()
+    _sync(service, sessions)
+
+    with pytest.raises(ConnectionError) as error:
+        service.set_activity_gear(USER, '104', EVO)
+
+    assert (error.value.code, error.value.status) == ('gear_starts_after_activity', 422)
