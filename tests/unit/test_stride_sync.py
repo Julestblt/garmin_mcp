@@ -339,3 +339,69 @@ def test_activities_without_gps_are_sent_without_null_route_values():
     assert unavailable['status'] == 'unavailable'
     assert set(unavailable) == {'status', 'route_point_count', 'series_point_count',
                                 'source_point_count'}
+
+
+class GearDatabase(FakeDatabase):
+    def __init__(self, job):
+        super().__init__(job)
+        self.gear = []
+        self.links = []
+
+    def request(self, method, path, *, params=None, data=None, prefer=None):
+        if path == 'provider_gear':
+            if method == 'POST':
+                self.gear.extend(data)
+            return [] if method == 'GET' else None
+        if path == 'provider_activity_gear':
+            if method == 'POST':
+                self.links.extend(data)
+            return None
+        return super().request(method, path, params=params, data=data, prefer=prefer)
+
+
+class GearSessions(FakeSessions):
+    def __init__(self, fail=False):
+        super().__init__()
+        self.fail = fail
+
+    def get_device_last_used(self):
+        if self.fail:
+            raise RuntimeError('gear unavailable')
+        return {'userProfileNumber': 7}
+
+    def get_gear(self, _profile):
+        return [{'uuid': 'a1b2c3d4e5f60718293a4b5c6d7e8f90', 'gearTypeName': 'Shoes',
+                 'gearStatusName': 'active', 'gearMakeName': 'Nike', 'gearModelName': 'Zegama'}]
+
+    def get_gear_stats(self, _key):
+        return {'totalDistance': 241354.0, 'totalActivities': 1}
+
+    def get_gear_activities(self, _key, _limit):
+        return [{'activityId': 123}]
+
+
+def _incremental_job(today):
+    return {'id': str(uuid.uuid4()), 'connection_id': str(uuid.uuid4()),
+            'user_id': str(uuid.uuid4()), 'state': 'queued', 'mode': 'incremental',
+            'cursor_date': today.isoformat(), 'oldest_date': (today - timedelta(days=6)).isoformat(),
+            'activity_count': 0, 'attempts': 0, 'failure_count': 0}
+
+
+def test_last_activity_chunk_refreshes_shoes_and_their_activities():
+    database = GearDatabase(_incremental_job(date(2026, 10, 20)))
+
+    ActivitySyncWorker(database, GearSessions()).run_once()
+
+    assert database.job['state'] == 'succeeded'
+    assert [(row['gear_uuid'], row['total_distance_meters']) for row in database.gear] == [
+        ('a1b2c3d4e5f60718293a4b5c6d7e8f90', 241354.0)]
+    assert [row['provider_activity_id'] for row in database.links] == ['123']
+
+
+def test_gear_failures_do_not_fail_the_activity_sync():
+    database = GearDatabase(_incremental_job(date(2026, 10, 20)))
+
+    ActivitySyncWorker(database, GearSessions(fail=True)).run_once()
+
+    assert database.job['state'] == 'succeeded'
+    assert database.gear == []

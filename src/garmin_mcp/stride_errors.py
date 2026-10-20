@@ -28,6 +28,9 @@ DEPENDENCY_UNAVAILABLE = 'dependency_unavailable'
 SERVICE_UNAVAILABLE = 'service_unavailable'
 DISCONNECTED = 'disconnected'
 CONNECTION_REPLACED = 'connection_replaced'
+# The gear or activity is not one of the athlete's Garmin records.
+GEAR_NOT_FOUND = 'gear_not_found'
+ACTIVITY_NOT_FOUND = 'activity_not_found'
 
 # Provider failures that are safe to retry with backoff.
 RETRYABLE_CODES = frozenset({RATE_LIMITED, PROVIDER_UNAVAILABLE})

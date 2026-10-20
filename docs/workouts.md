@@ -1,6 +1,6 @@
 # Planned workouts
 
-Stride pushes planned run and trail sessions to the athlete's Garmin calendar so the watch can guide them. This is the only Garmin write this service performs. Only the Stride server triggers it, through the REST API, on behalf of the signed-in athlete. The Stride-mode MCP tool set stays read-only.
+Stride pushes planned run and trail sessions to the athlete's Garmin calendar so the watch can guide them. Apart from the running-shoe writes in `docs/gear.md`, this is the only Garmin write this service performs. Only the Stride server triggers it, through the REST API, on behalf of the signed-in athlete. The Stride-mode MCP tool set stays read-only.
 
 ## Reconcile a window
 
